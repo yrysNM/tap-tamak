@@ -1,0 +1,343 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// Core enums
+enum Role {
+  USER
+  COOK
+  ADMIN
+}
+
+enum VerificationStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  READY
+  ON_THE_WAY
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum PaymentProvider {
+  KASPI
+  HALYK
+  FREEDOM
+}
+
+enum TransactionType {
+  ORDER_PAYMENT
+  COOK_EARNING
+  PLATFORM_FEE
+  PAYOUT
+  REFUND
+}
+
+enum NotificationType {
+  ORDER_UPDATE
+  NEW_ORDER
+  REVIEW_RECEIVED
+  PAYMENT_UPDATE
+  PROMOTION
+  SYSTEM
+}
+
+enum CookLeadStatus {
+  NEW
+  CONTACTED
+  ARCHIVED
+}
+
+/// Core models
+model User {
+  id           String   @id @default(uuid())
+  email        String?  @unique
+  phone        String   @unique
+  passwordHash String
+  firstName    String
+  lastName     String?
+  role         Role     @default(USER)
+  refreshToken String?
+  isActive     Boolean  @default(true)
+
+  // Relations
+  cook       Cook?
+  addresses  Address[]
+  orders     Order[]
+  reviews    Review[]
+  cart       Cart?
+  devices    DeviceToken[]
+  favoritesDishes FavoriteDish[]
+  favoritesCooks  FavoriteCook[]
+  notifications   Notification[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Cook {
+  id                String              @id @default(uuid())
+  userId            String              @unique
+  businessName      String
+  bio               String?
+  verificationStatus VerificationStatus @default(PENDING)
+  latitude          Float?
+  longitude         Float?
+  isAvailable       Boolean             @default(false)
+  rating            Float               @default(0)
+  totalReviews      Int                 @default(0)
+  platformFee       Int                 @default(0) // percentage points
+
+  user        User        @relation(fields: [userId], references: [id])
+  dishes      Dish[]
+  orders      Order[]
+  reviews     Review[]
+  earnings    Transaction[]
+  favoritedBy FavoriteCook[]
+  verification CookVerification?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([latitude, longitude])
+}
+
+model CookVerification {
+  id               String   @id @default(uuid())
+  cookId           String   @unique
+  kitchenPhotoUrls String[]
+  healthCertUrl    String
+  certificateUrl   String
+  rejectionReason  String?
+
+  cook Cook @relation(fields: [cookId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Dish {
+  id          String      @id @default(uuid())
+  cookId      String
+  name        String
+  description String
+  price       Int         // stored in KZT as integer
+  imageUrl    String?
+  category    String
+  tags        String[]
+  isAvailable Boolean     @default(true)
+  calories    Int?
+
+  cook        Cook        @relation(fields: [cookId], references: [id])
+  orderItems  OrderItem[]
+  reviews     Review[]
+  cartItems   CartItem[]
+  favoritedBy FavoriteDish[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Order {
+  id             String         @id @default(uuid())
+  orderNumber    String         @unique
+  userId         String
+  cookId         String
+  status         OrderStatus    @default(PENDING)
+  totalAmount    Int
+  deliveryFee    Int            @default(0)
+  deliveryAddress String
+
+  paymentStatus  PaymentStatus  @default(PENDING)
+  paymentProvider PaymentProvider?
+  paymentId      String?
+
+  user        User       @relation(fields: [userId], references: [id])
+  cook        Cook       @relation(fields: [cookId], references: [id])
+  items       OrderItem[]
+  transactions Transaction[]
+  review      Review?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@index([cookId])
+}
+
+model OrderItem {
+  id       String  @id @default(uuid())
+  orderId  String
+  dishId   String
+  quantity Int
+
+  /// Snapshot fields at order time
+  price    Int
+  name     String
+
+  order    Order  @relation(fields: [orderId], references: [id])
+  dish     Dish   @relation(fields: [dishId], references: [id])
+}
+
+model Review {
+  id        String   @id @default(uuid())
+  userId    String
+  cookId    String
+  orderId   String   @unique
+  dishId    String?
+  rating    Int
+  comment   String?
+  reply     String?
+  repliedAt DateTime?
+
+  user      User   @relation(fields: [userId], references: [id])
+  cook      Cook   @relation(fields: [cookId], references: [id])
+  order     Order  @relation(fields: [orderId], references: [id])
+  dish      Dish?  @relation(fields: [dishId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Transaction {
+  id        String          @id @default(uuid())
+  orderId   String?
+  cookId    String?
+  type      TransactionType
+  amount    Int
+  status    PaymentStatus
+  provider  PaymentProvider?
+  externalId String?        @unique
+
+  order     Order? @relation(fields: [orderId], references: [id])
+  cook      Cook?  @relation(fields: [cookId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Cart {
+  id      String  @id @default(uuid())
+  userId  String  @unique
+  cookId  String?
+
+  user    User     @relation(fields: [userId], references: [id])
+  items   CartItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model CartItem {
+  id       String @id @default(uuid())
+  cartId   String
+  dishId   String
+  quantity Int
+
+  cart     Cart  @relation(fields: [cartId], references: [id])
+  dish     Dish  @relation(fields: [dishId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Address {
+  id        String   @id @default(uuid())
+  userId    String
+  label     String
+  street    String
+  city      String
+  latitude  Float?
+  longitude Float?
+  isDefault Boolean  @default(false)
+
+  user      User     @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  isRead    Boolean          @default(false)
+
+  user      User             @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model FavoriteDish {
+  userId String
+  dishId String
+
+  user   User @relation(fields: [userId], references: [id])
+  dish   Dish @relation(fields: [dishId], references: [id])
+
+  @@id([userId, dishId])
+}
+
+model FavoriteCook {
+  userId String
+  cookId String
+
+  user   User @relation(fields: [userId], references: [id])
+  cook   Cook @relation(fields: [cookId], references: [id])
+
+  @@id([userId, cookId])
+}
+
+model DeviceToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String?
+
+  user      User     @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model CookLead {
+  id         String         @id @default(uuid())
+  email      String
+  fullName   String
+  message    String
+  status     CookLeadStatus @default(NEW)
+  source     String         @default("tilda")
+  rawPayload Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([createdAt])
+  @@index([status])
+}

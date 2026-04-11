@@ -1,0 +1,23 @@
+# Tap Tamak Backend — Cursor Rules
+
+## Stack
+- NestJS 10 + Prisma 5 + PostgreSQL 16
+- JWT auth (access 15min, refresh 7d)
+- All routes protected by default — use @Public() to opt out
+- JwtAuthGuard + RolesGuard registered as global APP_GUARD
+
+## Conventions
+- Feature-based modules under src/modules/
+- PrismaModule is @Global() — inject PrismaService directly, no repository layer
+- All prices in KZT as Int (no decimals)
+- All IDs are UUID (@id @default(uuid()))
+- Use class-validator DTOs with whitelist: true
+- API base: /api/v1
+
+## Key rules
+- Never use a repository pattern — Prisma IS the data access layer
+- Always check idempotency in payment webhooks before processing
+- Nearby cooks use Haversine formula via $queryRaw
+- Webhook endpoints must be @Public() and validate provider signatures
+
+## Refer to: docs/tap-tamak-backend.pdf for full schema, endpoints, and payment integration details
