@@ -7,7 +7,13 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../core/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../core/auth/guards/roles.guard';
@@ -40,31 +46,31 @@ export class CrmCookVerificationsController {
       limit,
       status: query.status,
     });
-    return { data: result.items, meta: result.meta };
+    return { items: result.items, meta: result.meta };
   }
 
   @Get(':cookId')
   @ApiOperation({ summary: 'Get one cook verification details' })
   async getByCookId(@Param('cookId') cookId: string) {
-    const data = await this.cookVerificationService.findOneForCrm(cookId);
-    return { data };
+    return this.cookVerificationService.findOneForCrm(cookId);
   }
 
   @Patch(':cookId/status')
   @ApiOperation({
-    summary: 'Set cook verification status (approve / reject / pending / review)',
+    summary: 'Update cook verification status (admin)',
     description:
-      'Use `rejectionReason` when status is REJECTED. Supports all VerificationStatus values for future workflows.',
+      'Sets the cook’s `verificationStatus`. When `status` is `REJECTED`, `rejectionReason` is required (stored on the verification record). For other statuses, `rejectionReason` is cleared.',
   })
+  @ApiParam({ name: 'cookId', description: 'Cook id' })
+  @ApiBody({ type: PatchCookVerificationStatusDto })
   async patchStatus(
     @Param('cookId') cookId: string,
     @Body() body: PatchCookVerificationStatusDto,
   ) {
-    const data = await this.cookVerificationService.updateStatusByAdmin(
+    return this.cookVerificationService.updateStatusByAdmin(
       cookId,
       body.status,
       body.rejectionReason,
     );
-    return { data };
   }
 }

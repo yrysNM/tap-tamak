@@ -37,8 +37,7 @@ export class CrmGalleryController {
       'Returns JPEG, PNG, and WebP files under `uploads/gallery`, newest first.',
   })
   async list() {
-    const data = await this.galleryService.listImages();
-    return { data };
+    return this.galleryService.listImages();
   }
 
   @Post('upload')
@@ -68,7 +67,6 @@ export class CrmGalleryController {
     }),
   )
   async upload(@UploadedFile() file: Express.Multer.File) {
-    const data = await this.galleryService.uploadImage(file);
-    return { data };
+    return this.galleryService.uploadImage(file);
   }
 }

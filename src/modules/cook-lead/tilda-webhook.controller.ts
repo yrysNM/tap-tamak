@@ -44,12 +44,11 @@ export class TildaWebhookController {
   async ingest(
     @Body() dto: CreateCookLeadDto,
     @Req() req: Request,
-  ): Promise<{ data: Awaited<ReturnType<CookLeadService['createFromTilda']>> }> {
+  ): Promise<Awaited<ReturnType<CookLeadService['createFromTilda']>>> {
     const raw =
       req.body && typeof req.body === 'object' && !Array.isArray(req.body)
         ? (req.body as Record<string, unknown>)
         : undefined;
-    const created = await this.cookLeadService.createFromTilda(dto, raw);
-    return { data: created };
+    return this.cookLeadService.createFromTilda(dto, raw);
   }
 }

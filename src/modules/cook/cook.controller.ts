@@ -1,5 +1,6 @@
 import {
   Controller,
+  Get,
   Post,
   UploadedFiles,
   UseGuards,
@@ -32,17 +33,28 @@ export class CookController {
   ) {}
 
   @Roles(Role.COOK)
+  @Get('me/verification')
+  @ApiOperation({
+    summary: 'Get cook verification status and submitted documents',
+    description:
+      'Returns `verificationStatus`, `businessName`, and `documents` (kitchen photos, PDF URLs, rejection reason if any, timestamps) or `documents: null` if nothing submitted yet.',
+  })
+  async getVerification(@CurrentUser() user: User) {
+    return this.cookVerificationService.getStatusForUser(user.id);
+  }
+
+  @Roles(Role.COOK)
   @Post('me/verification')
   @ApiOperation({
     summary: 'Upload verification documents (kitchen photos + PDFs)',
     description:
-      'Multipart: `kitchenPhotos` (1–6 images: JPEG, PNG, WebP), `healthCert` (PDF), `certificate` (PDF). Sets verification status to UNDER_REVIEW.',
+      'Multipart: `kitchenPhotos` (1–6 images: JPEG, PNG, WebP), `certificate` (PDF), optional `healthCert` (PDF). Sets verification status to UNDER_REVIEW.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['kitchenPhotos', 'healthCert', 'certificate'],
+      required: ['kitchenPhotos', 'certificate'],
       properties: {
         kitchenPhotos: {
           type: 'array',
@@ -54,7 +66,7 @@ export class CookController {
         healthCert: {
           type: 'string',
           format: 'binary',
-          description: 'Health certificate (PDF)',
+          description: 'Health certificate (PDF), optional',
         },
         certificate: {
           type: 'string',
@@ -86,10 +98,6 @@ export class CookController {
       certificate?: Express.Multer.File[];
     },
   ) {
-    const data = await this.cookVerificationService.submitForUser(
-      user.id,
-      files,
-    );
-    return { data };
+    return this.cookVerificationService.submitForUser(user.id, files);
   }
 }

@@ -125,7 +125,7 @@ model CookVerification {
   id               String   @id @default(uuid())
   cookId           String   @unique
   kitchenPhotoUrls String[]
-  healthCertUrl    String
+  healthCertUrl    String?
   certificateUrl   String
   rejectionReason  String?
 

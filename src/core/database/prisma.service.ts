@@ -8,7 +8,7 @@ export class PrismaService
   implements OnModuleInit, OnModuleDestroy
 {
   constructor() {
-    const connectionString = process.env.DATABASE_URL;
+    const connectionString = process.env.NODE_ENV === 'production' ? process.env.DATABASE_URL : process.env.DATABASE_URL_TEST;
     if (!connectionString) {
       throw new Error(
         'DATABASE_URL is not set. Set it in .env or ensure DB_* vars are set so main.ts can build it.',

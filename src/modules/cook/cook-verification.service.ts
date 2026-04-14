@@ -32,11 +32,42 @@ function extForImageMime(mime: string): string {
   }
 }
 
+/** Treat legacy empty / whitespace-only DB values as absent. */
+function healthCertPathOrNull(
+  stored: string | null | undefined,
+): string | null {
+  if (stored == null || stored.trim() === '') {
+    return null;
+  }
+  return stored;
+}
+
+/**
+ * Older DBs (or pending migrations) keep `healthCertUrl` NOT NULL; use '' for “no file”.
+ * Nullable columns accept '' as well.
+ */
+function healthCertPathForDb(path: string | null): string {
+  return healthCertPathOrNull(path) ?? '';
+}
+
 export interface VerificationUploadResult {
   verificationStatus: VerificationStatus;
   kitchenPhotoUrls: string[];
-  healthCertUrl: string;
+  healthCertUrl: string | null;
   certificateUrl: string;
+}
+
+export interface CookVerificationStatusResponse {
+  verificationStatus: VerificationStatus;
+  businessName: string;
+  documents: {
+    kitchenPhotoUrls: string[];
+    healthCertUrl: string | null;
+    certificateUrl: string;
+    rejectionReason: string | null;
+    submittedAt: Date;
+    updatedAt: Date;
+  } | null;
 }
 
 @Injectable()
@@ -50,6 +81,72 @@ export class CookVerificationService {
     return paths.map((p) => this.storage.getPublicUrl(p));
   }
 
+  private mapVerificationDocumentsToPublic(v: {
+    kitchenPhotoUrls: string[];
+    healthCertUrl: string | null;
+    certificateUrl: string;
+    rejectionReason: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    const healthRel = healthCertPathOrNull(v.healthCertUrl);
+    return {
+      kitchenPhotoUrls: this.toPublicUrls(v.kitchenPhotoUrls),
+      healthCertUrl: healthRel
+        ? this.storage.getPublicUrl(healthRel)
+        : null,
+      certificateUrl: this.storage.getPublicUrl(v.certificateUrl),
+      rejectionReason: v.rejectionReason,
+      submittedAt: v.createdAt,
+      updatedAt: v.updatedAt,
+    };
+  }
+
+  /**
+   * Every cook user must have a `Cook` row. Legacy signups (or role changes)
+   * may have `User.role === COOK` without a profile; create one using the name on file.
+   */
+  private async loadCookForUserOrCreate(userId: string) {
+    let cook = await this.prisma.cook.findUnique({
+      where: { userId },
+      include: { verification: true },
+    });
+    if (cook) {
+      return cook;
+    }
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    await this.prisma.cook.create({
+      data: {
+        userId,
+        businessName: user.firstName.trim() || 'Cook',
+      },
+    });
+    cook = await this.prisma.cook.findUnique({
+      where: { userId },
+      include: { verification: true },
+    });
+    if (!cook) {
+      throw new NotFoundException('Cook profile not found');
+    }
+    return cook;
+  }
+
+  async getStatusForUser(
+    userId: string,
+  ): Promise<CookVerificationStatusResponse> {
+    const cook = await this.loadCookForUserOrCreate(userId);
+    return {
+      verificationStatus: cook.verificationStatus,
+      businessName: cook.businessName,
+      documents: cook.verification
+        ? this.mapVerificationDocumentsToPublic(cook.verification)
+        : null,
+    };
+  }
+
   async submitForUser(
     userId: string,
     files: {
@@ -58,12 +155,7 @@ export class CookVerificationService {
       certificate?: Express.Multer.File[];
     },
   ): Promise<VerificationUploadResult> {
-    const cook = await this.prisma.cook.findUnique({
-      where: { userId },
-    });
-    if (!cook) {
-      throw new NotFoundException('Cook profile not found');
-    }
+    const cook = await this.loadCookForUserOrCreate(userId);
     return this.submitDocuments(cook, files);
   }
 
@@ -84,9 +176,6 @@ export class CookVerificationService {
         `kitchenPhotos must contain between 1 and ${MAX_KITCHEN_PHOTOS} images`,
       );
     }
-    if (!health) {
-      throw new BadRequestException('healthCert (PDF) is required');
-    }
     if (!cert) {
       throw new BadRequestException('certificate (PDF) is required');
     }
@@ -101,27 +190,37 @@ export class CookVerificationService {
         throw new BadRequestException('Each kitchen photo must be at most 8MB');
       }
     }
-    for (const f of [health, cert]) {
-      if (f.mimetype !== PDF_MIME) {
+    if (health) {
+      if (health.mimetype !== PDF_MIME) {
         throw new BadRequestException(
-          `Expected PDF for ${f === health ? 'healthCert' : 'certificate'} (got ${f.mimetype})`,
+          `Expected PDF for healthCert (got ${health.mimetype})`,
         );
       }
-      if (f.size > MAX_PDF_BYTES) {
+      if (health.size > MAX_PDF_BYTES) {
         throw new BadRequestException('Each PDF must be at most 15MB');
       }
+    }
+    if (cert.mimetype !== PDF_MIME) {
+      throw new BadRequestException(
+        `Expected PDF for certificate (got ${cert.mimetype})`,
+      );
+    }
+    if (cert.size > MAX_PDF_BYTES) {
+      throw new BadRequestException('Each PDF must be at most 15MB');
     }
 
     const existing = await this.prisma.cookVerification.findUnique({
       where: { cookId: cook.id },
     });
-    const oldPaths: string[] = existing
-      ? [
-          ...existing.kitchenPhotoUrls,
-          existing.healthCertUrl,
-          existing.certificateUrl,
-        ]
-      : [];
+    const oldPaths: string[] = [];
+    if (existing) {
+      oldPaths.push(...existing.kitchenPhotoUrls);
+      const prevHealth = healthCertPathOrNull(existing.healthCertUrl);
+      if (health && prevHealth) {
+        oldPaths.push(prevHealth);
+      }
+      oldPaths.push(existing.certificateUrl);
+    }
 
     const kitchenPaths: string[] = [];
     for (let i = 0; i < kitchen.length; i++) {
@@ -137,13 +236,18 @@ export class CookVerificationService {
       kitchenPaths.push(rel);
     }
 
-    const healthPath = await this.storage.saveVerificationFile(
-      cook.id,
-      'healthCert',
-      undefined,
-      health.buffer,
-      '.pdf',
-    );
+    let healthPath: string | null = null;
+    if (health) {
+      healthPath = await this.storage.saveVerificationFile(
+        cook.id,
+        'healthCert',
+        undefined,
+        health.buffer,
+        '.pdf',
+      );
+    } else if (existing) {
+      healthPath = healthCertPathOrNull(existing.healthCertUrl);
+    }
     const certPath = await this.storage.saveVerificationFile(
       cook.id,
       'certificate',
@@ -160,12 +264,12 @@ export class CookVerificationService {
         create: {
           cookId: cook.id,
           kitchenPhotoUrls: kitchenPaths,
-          healthCertUrl: healthPath,
+          healthCertUrl: healthCertPathForDb(healthPath),
           certificateUrl: certPath,
         },
         update: {
           kitchenPhotoUrls: kitchenPaths,
-          healthCertUrl: healthPath,
+          healthCertUrl: healthCertPathForDb(healthPath),
           certificateUrl: certPath,
           rejectionReason: null,
         },
@@ -179,7 +283,9 @@ export class CookVerificationService {
     return {
       verificationStatus: VerificationStatus.UNDER_REVIEW,
       kitchenPhotoUrls: this.toPublicUrls(kitchenPaths),
-      healthCertUrl: this.storage.getPublicUrl(healthPath),
+      healthCertUrl: healthPath
+        ? this.storage.getPublicUrl(healthPath)
+        : null,
       certificateUrl: this.storage.getPublicUrl(certPath),
     };
   }
@@ -263,7 +369,7 @@ export class CookVerificationService {
       verification: {
         id: string;
         kitchenPhotoUrls: string[];
-        healthCertUrl: string;
+        healthCertUrl: string | null;
         certificateUrl: string;
         rejectionReason: string | null;
         createdAt: Date;
@@ -277,16 +383,7 @@ export class CookVerificationService {
       businessName: cook.businessName,
       verificationStatus: cook.verificationStatus,
       user: cook.user,
-      documents: v
-        ? {
-            kitchenPhotoUrls: this.toPublicUrls(v.kitchenPhotoUrls),
-            healthCertUrl: this.storage.getPublicUrl(v.healthCertUrl),
-            certificateUrl: this.storage.getPublicUrl(v.certificateUrl),
-            rejectionReason: v.rejectionReason,
-            submittedAt: v.createdAt,
-            updatedAt: v.updatedAt,
-          }
-        : null,
+      documents: v ? this.mapVerificationDocumentsToPublic(v) : null,
     };
   }
 

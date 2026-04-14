@@ -7,7 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../database/prisma.service';
-import { User } from '@prisma/client';
+import { Role, User } from '@prisma/client';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { AccessTokenPayload } from './strategies/access-token.strategy';
@@ -42,12 +42,22 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
+    const firstName = dto.firstName.trim();
     const user = await this.prisma.user.create({
       data: {
         phone: normalizedPhone,
         passwordHash,
-        firstName: dto.firstName.trim(),
+        firstName,
         role: dto.role,
+        ...(dto.role === Role.COOK
+          ? {
+              cook: {
+                create: {
+                  businessName: firstName || 'Cook',
+                },
+              },
+            }
+          : {}),
       },
     });
     return this.issueTokens(user);
@@ -65,7 +75,6 @@ export class AuthService {
       dto.password,
       user.passwordHash,
     );
-    console.log(isPasswordValid);
     if (!isPasswordValid) {
       throw new UnauthorizedException('Invalid credentials');
     }

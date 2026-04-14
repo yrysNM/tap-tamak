@@ -28,14 +28,13 @@ export class CrmCookLeadsController {
   @ApiOperation({ summary: 'List cook leads (paginated)' })
   async list(@Query() query: ListCookLeadsQueryDto) {
     const result = await this.cookLeadService.findManyForCms(query);
-    return { data: result.items, meta: result.meta };
+    return { items: result.items, meta: result.meta };
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get one cook lead' })
   async getById(@Param('id') id: string) {
-    const lead = await this.cookLeadService.findOne(id);
-    return { data: lead };
+    return this.cookLeadService.findOne(id);
   }
 
   @Patch(':id')
@@ -44,7 +43,6 @@ export class CrmCookLeadsController {
     @Param('id') id: string,
     @Body() body: PatchCookLeadStatusDto,
   ) {
-    const updated = await this.cookLeadService.updateStatus(id, body.status);
-    return { data: updated };
+    return this.cookLeadService.updateStatus(id, body.status);
   }
 }

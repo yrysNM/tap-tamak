@@ -42,9 +42,10 @@ export class OrderController {
 
   @Roles(Role.USER)
   @Post()
-  async createFromCart(@CurrentUser() user: CurrentUserPayload): Promise<{ data: { orderId: string } }> {
-    const result = await this.orderService.createFromCart(user.sub);
-    return { data: result };
+  async createFromCart(
+    @CurrentUser() user: CurrentUserPayload,
+  ): Promise<{ orderId: string }> {
+    return this.orderService.createFromCart(user.sub);
   }
 
   @Get()
@@ -58,11 +59,11 @@ export class OrderController {
 
     if (user.role === Role.COOK && user.cookId) {
       const result = await this.orderService.listForCook(user.cookId, page, limit, status);
-      return { data: result.items, meta: result.meta };
+      return { items: result.items, meta: result.meta };
     }
 
     const result = await this.orderService.listForUser(user.sub, page, limit, status);
-    return { data: result.items, meta: result.meta };
+    return { items: result.items, meta: result.meta };
   }
 
   @Get(':id')
@@ -70,8 +71,7 @@ export class OrderController {
     @Param('id') id: string,
     @CurrentUser() user: CurrentUserPayload,
   ) {
-    const order = await this.orderService.getOrderById(id, user.sub, user.role, user.cookId);
-    return { data: order };
+    return this.orderService.getOrderById(id, user.sub, user.role, user.cookId);
   }
 
   @Roles(Role.COOK)
@@ -83,7 +83,7 @@ export class OrderController {
   ) {
     const updated = await this.orderService.updateStatus(id, user.cookId!, body.status);
     // this.orderGateway.notifyStatusChange(id, { orderId: id, status: updated.status });
-    return { data: updated };
+    return updated;
   }
 
   @Post(':id/cancel')
@@ -93,7 +93,7 @@ export class OrderController {
   ) {
     const updated = await this.orderService.cancel(id, user.sub, user.role, user.cookId);
     // this.orderGateway.notifyStatusChange(id, { orderId: id, status: updated.status });
-    return { data: updated };
+    return updated;
   }
 }
 
