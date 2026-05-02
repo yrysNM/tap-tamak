@@ -8,6 +8,9 @@ import { OrderModule } from './modules/order/order.module';
 import { CookLeadModule } from './modules/cook-lead/cook-lead.module';
 import { CookModule } from './modules/cook/cook.module';
 import { GalleryModule } from './modules/gallery/gallery.module';
+import { DishesModule } from './modules/dishes/dishes.module';
+import { MenusModule } from './modules/menus/menus.module';
+import { BasketModule } from './modules/basket/basket.module';
 import { StorageModule } from './core/storage/storage.module';
 import { JwtAuthGuard } from './core/auth/guards/jwt-auth.guard';
 import { RolesGuard } from './core/auth/guards/roles.guard';
@@ -29,6 +32,9 @@ import { AppService } from './app.service';
     StorageModule,
     CookModule,
     GalleryModule,
+    DishesModule,
+    MenusModule,
+    BasketModule,
   ],
   controllers: [AppController],
   providers: [

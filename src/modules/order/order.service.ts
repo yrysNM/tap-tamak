@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../core/database/prisma.service';
 import { OrderStatus, PaymentStatus, Role } from '@prisma/client';
+import { isCookActiveNow } from '../cook/cook-availability.util';
 
 interface CreateOrderResult {
   orderId: string;
@@ -31,6 +32,22 @@ export class OrderService {
 
     if (dishes.some((d) => !d.isAvailable)) {
       throw new BadRequestException('Some dishes are not available');
+    }
+
+    const cook = await this.prisma.cook.findUnique({
+      where: { id: cookId },
+      select: {
+        verificationStatus: true,
+        isAvailable: true,
+        workStartAt: true,
+        workEndAt: true,
+      },
+    });
+    if (!cook) {
+      throw new NotFoundException('Cook not found');
+    }
+    if (!isCookActiveNow(cook)) {
+      throw new BadRequestException('Cook is not active at this time');
     }
 
     const itemsTotal = cart.items.reduce((sum, item) => sum + item.quantity * item.dish.price, 0);
@@ -96,7 +113,7 @@ export class OrderService {
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
-        include: { items: true, cook: true },
+        include: { items: { include: { dish: true } }, cook: true },
       }),
       this.prisma.order.count({ where }),
     ]);
@@ -123,7 +140,7 @@ export class OrderService {
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
-        include: { items: true, user: true },
+        include: { items: { include: { dish: true } }, user: true },
       }),
       this.prisma.order.count({ where }),
     ]);
@@ -141,7 +158,7 @@ export class OrderService {
   async getOrderById(orderId: string, userId: string, role: Role, cookId?: string) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      include: { items: true, user: true, cook: true },
+      include: { items: { include: { dish: true } }, user: true, cook: true },
     });
 
     if (!order) {

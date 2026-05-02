@@ -1,7 +1,11 @@
 import {
+  Body,
   Controller,
   Get,
+  Param,
+  Patch,
   Post,
+  Query,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
@@ -21,17 +25,77 @@ import { JwtAuthGuard } from '../../core/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../core/auth/guards/roles.guard';
 import { Roles } from '../../core/auth/decorators/roles.decorator';
 import { CurrentUser } from '../../core/auth/decorators/current-user.decorator';
+import { Public } from '../../core/auth/decorators/public.decorator';
 import { CookVerificationService } from './cook-verification.service';
+import { CookService } from './cook.service';
+import { ListCooksQueryDto } from './dto/list-cooks-query.dto';
+import { SubmitCookVerificationDto } from './dto/submit-cook-verification.dto';
+import { UpdateCookScheduleDto } from './dto/update-cook-schedule.dto';
+import { GetCookMenuInfoQueryDto } from './dto/get-cook-menu-info-query.dto';
 
 @ApiTags('cooks')
-@ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('cooks')
 export class CookController {
   constructor(
     private readonly cookVerificationService: CookVerificationService,
+    private readonly cookService: CookService,
   ) {}
 
+  @Public()
+  @Get()
+  @ApiOperation({
+    summary: 'List cooks (storefront)',
+    description:
+      'Paginated verified cooks for the client app. Optional `isAvailable`, `q` (business name contains).',
+  })
+  async listForClient(@Query() query: ListCooksQueryDto) {
+    return this.cookService.listForClient({
+      page: query.page ?? 1,
+      limit: query.limit ?? 20,
+      isAvailable: query.isAvailable,
+      q: query.q,
+    });
+  }
+
+  @Public()
+  @Get(':cookId/menus-information')
+  @ApiOperation({
+    summary: 'Get cook profile with menu information',
+    description:
+      'Returns verified cook information and dishes from a menu for the requested UTC date (or today if omitted).',
+  })
+  async getMenuInformationForClient(
+    @Param('cookId') cookId: string,
+    @Query() query: GetCookMenuInfoQueryDto,
+  ) {
+    return this.cookService.getMenuInformationForClient(cookId, query.date);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.COOK)
+  @Get('me/schedule')
+  @ApiOperation({
+    summary: "Get cook's work schedule",
+    description: 'Returns current UTC schedule window and computed active status.',
+  })
+  async getMySchedule(@CurrentUser() user: User) {
+    return this.cookService.getMySchedule(user.id);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.COOK)
+  @Patch('me/schedule')
+  @ApiOperation({
+    summary: "Set cook's work schedule",
+    description:
+      'Sets UTC schedule range (`workStartAt`, `workEndAt`). Cook becomes inactive automatically after `workEndAt`.',
+  })
+  async updateMySchedule(@CurrentUser() user: User, @Body() dto: UpdateCookScheduleDto) {
+    return this.cookService.updateMySchedule(user.id, dto.workStartAt, dto.workEndAt);
+  }
+
+  @ApiBearerAuth()
   @Roles(Role.COOK)
   @Get('me/verification')
   @ApiOperation({
@@ -43,6 +107,7 @@ export class CookController {
     return this.cookVerificationService.getStatusForUser(user.id);
   }
 
+  @ApiBearerAuth()
   @Roles(Role.COOK)
   @Post('me/verification')
   @ApiOperation({
@@ -54,8 +119,20 @@ export class CookController {
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['kitchenPhotos', 'certificate'],
+      required: ['kitchenPhotos', 'certificate', 'latitude', 'longitude'],
       properties: {
+        latitude: {
+          type: 'number',
+          format: 'double',
+          description: 'Cook latitude in decimal degrees',
+          example: 43.238949,
+        },
+        longitude: {
+          type: 'number',
+          format: 'double',
+          description: 'Cook longitude in decimal degrees',
+          example: 76.889709,
+        },
         kitchenPhotos: {
           type: 'array',
           items: { type: 'string', format: 'binary' },
@@ -91,6 +168,7 @@ export class CookController {
   )
   async uploadVerification(
     @CurrentUser() user: User,
+    @Body() dto: SubmitCookVerificationDto,
     @UploadedFiles()
     files: {
       kitchenPhotos?: Express.Multer.File[];
@@ -98,6 +176,6 @@ export class CookController {
       certificate?: Express.Multer.File[];
     },
   ) {
-    return this.cookVerificationService.submitForUser(user.id, files);
+    return this.cookVerificationService.submitForUser(user.id, files, dto);
   }
 }

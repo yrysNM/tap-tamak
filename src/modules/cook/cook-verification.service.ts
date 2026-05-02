@@ -5,9 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { Express } from 'express';
-import { Cook, Prisma, VerificationStatus } from '@prisma/client';
+import { Prisma, VerificationStatus } from '@prisma/client';
 import { PrismaService } from '../../core/database/prisma.service';
 import { StorageService } from '../../core/storage/storage.service';
+import { SubmitCookVerificationDto } from './dto/submit-cook-verification.dto';
 
 const IMAGE_MIMES = new Set([
   'image/jpeg',
@@ -52,6 +53,8 @@ function healthCertPathForDb(path: string | null): string {
 
 export interface VerificationUploadResult {
   verificationStatus: VerificationStatus;
+  latitude: number | null;
+  longitude: number | null;
   kitchenPhotoUrls: string[];
   healthCertUrl: string | null;
   certificateUrl: string;
@@ -60,6 +63,8 @@ export interface VerificationUploadResult {
 export interface CookVerificationStatusResponse {
   verificationStatus: VerificationStatus;
   businessName: string;
+  latitude: number | null;
+  longitude: number | null;
   documents: {
     kitchenPhotoUrls: string[];
     healthCertUrl: string | null;
@@ -69,6 +74,36 @@ export interface CookVerificationStatusResponse {
     updatedAt: Date;
   } | null;
 }
+
+type CookForVerification = Prisma.CookGetPayload<{
+  select: {
+    id: true;
+    userId: true;
+    businessName: true;
+    verificationStatus: true;
+    latitude: true;
+    longitude: true;
+    verification: true;
+  };
+}>;
+
+type CookForCrm = Prisma.CookGetPayload<{
+  select: {
+    id: true;
+    businessName: true;
+    verificationStatus: true;
+    user: {
+      select: {
+        id: true;
+        phone: true;
+        firstName: true;
+        lastName: true;
+        email: true;
+      };
+    };
+    verification: true;
+  };
+}>;
 
 @Injectable()
 export class CookVerificationService {
@@ -80,6 +115,36 @@ export class CookVerificationService {
   private toPublicUrls(paths: string[]): string[] {
     return paths.map((p) => this.storage.getPublicUrl(p));
   }
+
+  /**
+   * Keep Cook reads resilient when local DB lags behind latest Prisma schema:
+   * select only fields this service actually needs.
+   */
+  private readonly cookWithVerificationSelect = {
+    id: true,
+    userId: true,
+    businessName: true,
+    verificationStatus: true,
+    latitude: true,
+    longitude: true,
+    verification: true,
+  } satisfies Prisma.CookSelect;
+
+  private readonly cookCrmSelect = {
+    id: true,
+    businessName: true,
+    verificationStatus: true,
+    user: {
+      select: {
+        id: true,
+        phone: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+      },
+    },
+    verification: true,
+  } satisfies Prisma.CookSelect;
 
   private mapVerificationDocumentsToPublic(v: {
     kitchenPhotoUrls: string[];
@@ -109,7 +174,7 @@ export class CookVerificationService {
   private async loadCookForUserOrCreate(userId: string) {
     let cook = await this.prisma.cook.findUnique({
       where: { userId },
-      include: { verification: true },
+      select: this.cookWithVerificationSelect,
     });
     if (cook) {
       return cook;
@@ -126,7 +191,7 @@ export class CookVerificationService {
     });
     cook = await this.prisma.cook.findUnique({
       where: { userId },
-      include: { verification: true },
+      select: this.cookWithVerificationSelect,
     });
     if (!cook) {
       throw new NotFoundException('Cook profile not found');
@@ -141,6 +206,8 @@ export class CookVerificationService {
     return {
       verificationStatus: cook.verificationStatus,
       businessName: cook.businessName,
+      latitude: cook.latitude,
+      longitude: cook.longitude,
       documents: cook.verification
         ? this.mapVerificationDocumentsToPublic(cook.verification)
         : null,
@@ -154,18 +221,20 @@ export class CookVerificationService {
       healthCert?: Express.Multer.File[];
       certificate?: Express.Multer.File[];
     },
+    location: SubmitCookVerificationDto,
   ): Promise<VerificationUploadResult> {
     const cook = await this.loadCookForUserOrCreate(userId);
-    return this.submitDocuments(cook, files);
+    return this.submitDocuments(cook, files, location);
   }
 
   async submitDocuments(
-    cook: Cook,
+    cook: Pick<CookForVerification, 'id'>,
     files: {
       kitchenPhotos?: Express.Multer.File[];
       healthCert?: Express.Multer.File[];
       certificate?: Express.Multer.File[];
     },
+    location: SubmitCookVerificationDto,
   ): Promise<VerificationUploadResult> {
     const kitchen = files.kitchenPhotos ?? [];
     const health = files.healthCert?.[0];
@@ -274,14 +343,20 @@ export class CookVerificationService {
           rejectionReason: null,
         },
       }),
-      this.prisma.cook.update({
+      this.prisma.cook.updateMany({
         where: { id: cook.id },
-        data: { verificationStatus: VerificationStatus.UNDER_REVIEW },
+        data: {
+          verificationStatus: VerificationStatus.UNDER_REVIEW,
+          latitude: location.latitude,
+          longitude: location.longitude,
+        },
       }),
     ]);
 
     return {
       verificationStatus: VerificationStatus.UNDER_REVIEW,
+      latitude: location.latitude,
+      longitude: location.longitude,
       kitchenPhotoUrls: this.toPublicUrls(kitchenPaths),
       healthCertUrl: healthPath
         ? this.storage.getPublicUrl(healthPath)
@@ -308,18 +383,7 @@ export class CookVerificationService {
         skip: (page - 1) * limit,
         take: limit,
         orderBy: { updatedAt: 'desc' },
-        include: {
-          user: {
-            select: {
-              id: true,
-              phone: true,
-              firstName: true,
-              lastName: true,
-              email: true,
-            },
-          },
-          verification: true,
-        },
+        select: this.cookCrmSelect,
       }),
     ]);
 
@@ -338,18 +402,7 @@ export class CookVerificationService {
   async findOneForCrm(cookId: string) {
     const cook = await this.prisma.cook.findUnique({
       where: { id: cookId },
-      include: {
-        user: {
-          select: {
-            id: true,
-            phone: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-          },
-        },
-        verification: true,
-      },
+      select: this.cookCrmSelect,
     });
     if (!cook) {
       throw new NotFoundException('Cook not found');
@@ -358,24 +411,7 @@ export class CookVerificationService {
   }
 
   private mapCookVerificationRow(
-    cook: Cook & {
-      user: {
-        id: string;
-        phone: string;
-        firstName: string;
-        lastName: string | null;
-        email: string | null;
-      };
-      verification: {
-        id: string;
-        kitchenPhotoUrls: string[];
-        healthCertUrl: string | null;
-        certificateUrl: string;
-        rejectionReason: string | null;
-        createdAt: Date;
-        updatedAt: Date;
-      } | null;
-    },
+    cook: CookForCrm,
   ) {
     const v = cook.verification;
     return {
@@ -394,7 +430,7 @@ export class CookVerificationService {
   ) {
     const cook = await this.prisma.cook.findUnique({
       where: { id: cookId },
-      include: { verification: true },
+      select: this.cookWithVerificationSelect,
     });
     if (!cook) {
       throw new NotFoundException('Cook not found');
@@ -412,7 +448,7 @@ export class CookVerificationService {
     }
 
     await this.prisma.$transaction([
-      this.prisma.cook.update({
+      this.prisma.cook.updateMany({
         where: { id: cookId },
         data: { verificationStatus: status },
       }),
@@ -429,18 +465,7 @@ export class CookVerificationService {
 
     const updated = await this.prisma.cook.findUnique({
       where: { id: cookId },
-      include: {
-        user: {
-          select: {
-            id: true,
-            phone: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-          },
-        },
-        verification: true,
-      },
+      select: this.cookCrmSelect,
     });
     if (!updated) {
       throw new NotFoundException('Cook not found');

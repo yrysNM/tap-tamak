@@ -67,6 +67,11 @@ enum CookLeadStatus {
   ARCHIVED
 }
 
+enum DishPreparationType {
+  FAST
+  LONG
+}
+
 /// Core models
 model User {
   id           String   @id @default(uuid())
@@ -103,6 +108,8 @@ model Cook {
   latitude          Float?
   longitude         Float?
   isAvailable       Boolean             @default(false)
+  workStartAt       DateTime?           @db.Timestamptz(3)
+  workEndAt         DateTime?           @db.Timestamptz(3)
   rating            Float               @default(0)
   totalReviews      Int                 @default(0)
   platformFee       Int                 @default(0) // percentage points
@@ -114,6 +121,7 @@ model Cook {
   earnings    Transaction[]
   favoritedBy FavoriteCook[]
   verification CookVerification?
+  menus       Menu[]
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -146,15 +154,34 @@ model Dish {
   tags        String[]
   isAvailable Boolean     @default(true)
   calories    Int?
+  cookingTime Int         @default(0) // minutes
+  preparationType DishPreparationType @default(FAST)
 
   cook        Cook        @relation(fields: [cookId], references: [id])
   orderItems  OrderItem[]
   reviews     Review[]
   cartItems   CartItem[]
   favoritedBy FavoriteDish[]
+  menus       Menu[]
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+model Menu {
+  id        String   @id @default(uuid())
+  cookId    String
+  /// Calendar date only (stored as DATE in PostgreSQL, normalized to UTC midnight in app)
+  date      DateTime @db.Date
+
+  cook   Cook   @relation(fields: [cookId], references: [id], onDelete: Cascade)
+  dishes Dish[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([cookId, date])
+  @@index([date])
 }
 
 model Order {

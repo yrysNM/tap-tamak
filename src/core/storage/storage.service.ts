@@ -5,6 +5,7 @@ import { v4 as uuid } from 'uuid';
 
 const UPLOAD_SEGMENT = 'verification';
 const GALLERY_SEGMENT = 'gallery';
+const DISH_SEGMENT = 'dishes';
 
 @Injectable()
 export class StorageService {
@@ -40,6 +41,19 @@ export class StorageService {
   /**
    * Persists a file under uploads/gallery/ and returns the stored relative path (no leading slash).
    */
+  /**
+   * Persists a dish image under uploads/dishes/{cookId}/ and returns the stored relative path.
+   */
+  async saveDishImage(cookId: string, buffer: Buffer, ext: string): Promise<string> {
+    const safeExt = ext.startsWith('.') ? ext : `.${ext}`;
+    const name = `dish-${uuid()}${safeExt}`;
+    const relative = join(DISH_SEGMENT, cookId, name).replace(/\\/g, '/');
+    const full = join(this.uploadRoot, relative);
+    await mkdir(dirname(full), { recursive: true });
+    await writeFile(full, buffer);
+    return relative;
+  }
+
   async saveGalleryFile(buffer: Buffer, ext: string): Promise<string> {
     const safeExt = ext.startsWith('.') ? ext : `.${ext}`;
     const name = `${uuid()}${safeExt}`;
