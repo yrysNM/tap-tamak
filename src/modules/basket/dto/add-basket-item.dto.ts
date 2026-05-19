@@ -1,16 +1,35 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsInt, IsUUID, Max, Min } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsInt,
+  IsUUID,
+  Max,
+  Min,
+  ValidateNested,
+} from 'class-validator';
 
-export class AddBasketItemDto {
+export class AddBasketItemLineDto {
   @ApiProperty({ format: 'uuid' })
   @IsUUID()
   dishId: string;
 
-  @ApiProperty({ minimum: 1, maximum: 100, default: 1 })
+  @ApiProperty({ minimum: 1, maximum: 100 })
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(100)
   quantity: number;
+}
+
+export class AddBasketItemsDto {
+  @ApiProperty({ type: [AddBasketItemLineDto] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => AddBasketItemLineDto)
+  items: AddBasketItemLineDto[];
 }

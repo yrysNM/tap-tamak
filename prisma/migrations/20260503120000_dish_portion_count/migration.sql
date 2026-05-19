@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Dish" ADD COLUMN "portionCount" INTEGER NOT NULL DEFAULT 1;

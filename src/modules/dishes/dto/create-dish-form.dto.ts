@@ -63,6 +63,17 @@ export class CreateDishFormDto {
   @Min(0)
   calories?: number;
 
+  @ApiPropertyOptional({
+    default: 1,
+    description: 'Number of portions/servings this dish covers',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  portionCount?: number;
+
   @ApiPropertyOptional({ default: true })
   @IsOptional()
   @Transform(({ value }) => {

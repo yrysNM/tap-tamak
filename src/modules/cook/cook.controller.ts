@@ -7,6 +7,7 @@ import {
   Post,
   Query,
   UploadedFiles,
+  UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
@@ -18,7 +19,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { Role, User } from '@prisma/client';
-import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import type { Express } from 'express';
 import { JwtAuthGuard } from '../../core/auth/guards/jwt-auth.guard';
@@ -74,6 +75,18 @@ export class CookController {
 
   @ApiBearerAuth()
   @Roles(Role.COOK)
+  @Get('me/informations')
+  @ApiOperation({
+    summary: "Get cook's personal informations",
+    description:
+      'Returns cook profile image, phone, surname, average cooking time, and total dish count.',
+  })
+  async getMyInformations(@CurrentUser() user: User) {
+    return this.cookService.getMyInformations(user.id);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.COOK)
   @Get('me/schedule')
   @ApiOperation({
     summary: "Get cook's work schedule",
@@ -93,6 +106,40 @@ export class CookController {
   })
   async updateMySchedule(@CurrentUser() user: User, @Body() dto: UpdateCookScheduleDto) {
     return this.cookService.updateMySchedule(user.id, dto.workStartAt, dto.workEndAt);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.COOK)
+  @Patch('me/profile-image')
+  @ApiOperation({
+    summary: "Create or replace cook's profile image",
+    description: 'Multipart upload with one image file in `image` field (JPEG, PNG, WebP).',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['image'],
+      properties: {
+        image: {
+          type: 'string',
+          format: 'binary',
+          description: 'Cook profile image (JPEG, PNG, or WebP)',
+        },
+      },
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('image', {
+      storage: memoryStorage(),
+      limits: { fileSize: 8 * 1024 * 1024 },
+    }),
+  )
+  async updateMyProfileImage(
+    @CurrentUser() user: User,
+    @UploadedFile() image: Express.Multer.File | undefined,
+  ) {
+    return this.cookService.updateMyProfileImage(user.id, image);
   }
 
   @ApiBearerAuth()

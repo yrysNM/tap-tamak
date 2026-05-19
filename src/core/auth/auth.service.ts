@@ -21,6 +21,7 @@ export interface AuthTokens {
     id: string;
     firstName: string;
     role: string;
+    phone: string;
   };
 }
 
@@ -145,6 +146,7 @@ export class AuthService {
         id: user.id,
         firstName: user.firstName,
         role: user.role,
+        phone: user.phone,
       },
     };
   }

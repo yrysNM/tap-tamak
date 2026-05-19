@@ -6,6 +6,8 @@ import { v4 as uuid } from 'uuid';
 const UPLOAD_SEGMENT = 'verification';
 const GALLERY_SEGMENT = 'gallery';
 const DISH_SEGMENT = 'dishes';
+const ORDER_SEGMENT = 'orders';
+const COOK_SEGMENT = 'cooks';
 
 @Injectable()
 export class StorageService {
@@ -48,6 +50,32 @@ export class StorageService {
     const safeExt = ext.startsWith('.') ? ext : `.${ext}`;
     const name = `dish-${uuid()}${safeExt}`;
     const relative = join(DISH_SEGMENT, cookId, name).replace(/\\/g, '/');
+    const full = join(this.uploadRoot, relative);
+    await mkdir(dirname(full), { recursive: true });
+    await writeFile(full, buffer);
+    return relative;
+  }
+
+  /**
+   * Persists a cook profile image under uploads/cooks/{cookId}/ and returns the stored relative path.
+   */
+  async saveCookProfileImage(cookId: string, buffer: Buffer, ext: string): Promise<string> {
+    const safeExt = ext.startsWith('.') ? ext : `.${ext}`;
+    const name = `profile-${uuid()}${safeExt}`;
+    const relative = join(COOK_SEGMENT, cookId, name).replace(/\\/g, '/');
+    const full = join(this.uploadRoot, relative);
+    await mkdir(dirname(full), { recursive: true });
+    await writeFile(full, buffer);
+    return relative;
+  }
+
+  /**
+   * Checkout proof / reference image: uploads/orders/{userId}/checkout-{uuid}.{ext}
+   */
+  async saveOrderCheckoutPhoto(userId: string, buffer: Buffer, ext: string): Promise<string> {
+    const safeExt = ext.startsWith('.') ? ext : `.${ext}`;
+    const name = `checkout-${uuid()}${safeExt}`;
+    const relative = join(ORDER_SEGMENT, userId, name).replace(/\\/g, '/');
     const full = join(this.uploadRoot, relative);
     await mkdir(dirname(full), { recursive: true });
     await writeFile(full, buffer);

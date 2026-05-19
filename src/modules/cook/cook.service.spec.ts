@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { VerificationStatus } from '@prisma/client';
 import { CookService } from './cook.service';
 
@@ -85,5 +86,94 @@ describe('CookService', () => {
 
     expect(result.menu).toBeNull();
     expect(result.dishes).toEqual([]);
+  });
+
+  it('returns cook informations with average cooking time and dish count', async () => {
+    const prisma = {
+      cook: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'cook-1',
+          profileImageUrl: 'cook-profile/cook-1.jpg',
+          user: {
+            phone: '+77001234567',
+            lastName: 'Sarsenov',
+          },
+        }),
+      },
+      dish: {
+        aggregate: jest.fn().mockResolvedValue({
+          _avg: { cookingTime: 35 },
+          _count: { _all: 4 },
+        }),
+      },
+    };
+    const storage = {
+      getPublicUrl: jest.fn((path: string) => `/api/v1/uploads/${path}`),
+    };
+
+    const service = new CookService(prisma as any, storage as any);
+    const result = await service.getMyInformations('user-1');
+
+    expect(result).toEqual({
+      image: '/api/v1/uploads/cook-profile/cook-1.jpg',
+      phone: '+77001234567',
+      surname: 'Sarsenov',
+      avgTimeCooking: 35,
+      countDishes: 4,
+    });
+  });
+
+  it('returns zeroed dish stats when cook has no dishes', async () => {
+    const prisma = {
+      cook: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'cook-1',
+          profileImageUrl: null,
+          user: {
+            phone: '+77005556677',
+            lastName: null,
+          },
+        }),
+      },
+      dish: {
+        aggregate: jest.fn().mockResolvedValue({
+          _avg: { cookingTime: null },
+          _count: { _all: 0 },
+        }),
+      },
+    };
+    const storage = {
+      getPublicUrl: jest.fn((path: string) => `/api/v1/uploads/${path}`),
+    };
+
+    const service = new CookService(prisma as any, storage as any);
+    const result = await service.getMyInformations('user-1');
+
+    expect(result).toEqual({
+      image: null,
+      phone: '+77005556677',
+      surname: null,
+      avgTimeCooking: 0,
+      countDishes: 0,
+    });
+  });
+
+  it('throws when cook profile is missing for informations endpoint', async () => {
+    const prisma = {
+      cook: {
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+      dish: {
+        aggregate: jest.fn(),
+      },
+    };
+    const storage = {
+      getPublicUrl: jest.fn((path: string) => `/api/v1/uploads/${path}`),
+    };
+
+    const service = new CookService(prisma as any, storage as any);
+
+    await expect(service.getMyInformations('user-1')).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.dish.aggregate).not.toHaveBeenCalled();
   });
 });

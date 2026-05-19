@@ -121,9 +121,10 @@ export class DishesService {
         category,
         tags,
         calories: dto.calories ?? null,
+        portionCount: dto.portionCount ?? undefined,
         isAvailable: dto.isAvailable ?? true,
         imageUrl,
-      },
+      } as Prisma.DishUncheckedCreateInput,
     });
   }
 
@@ -190,6 +191,9 @@ export class DishesService {
     if (dto.category !== undefined) data.category = dto.category.trim() || 'general';
     if (dto.tags !== undefined) data.tags = parseTags(dto.tags);
     if (dto.calories !== undefined) data.calories = dto.calories;
+    if (dto.portionCount !== undefined) {
+      Object.assign(data, { portionCount: dto.portionCount } as Prisma.DishUpdateInput);
+    }
     if (dto.isAvailable !== undefined) data.isAvailable = dto.isAvailable;
 
     const oldImageRelative = this.relativePathFromPublicUrl(existing.imageUrl);

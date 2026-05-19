@@ -4,6 +4,7 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service';
 import { Role } from '@prisma/client';
+import { AUTH_USER_INCLUDE, AuthenticatedUser } from '../authenticated-user';
 
 export interface AccessTokenPayload {
   sub: string;
@@ -24,9 +25,10 @@ export class AccessTokenStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
   }
 
-  async validate(payload: AccessTokenPayload) {
+  async validate(payload: AccessTokenPayload): Promise<AuthenticatedUser> {
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
+      include: AUTH_USER_INCLUDE,
     });
     if (!user || !user.isActive) {
       throw new UnauthorizedException('User not found or inactive');

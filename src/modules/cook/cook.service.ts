@@ -10,6 +10,7 @@ const publicCookSelect = {
   id: true,
   businessName: true,
   bio: true,
+  profileImageUrl: true,
   rating: true,
   totalReviews: true,
   latitude: true,
@@ -30,6 +31,7 @@ type PublicCookRow = Prisma.CookGetPayload<{
 
 export type PublicCookSummary = Omit<PublicCookRow, 'verification'> & {
   kitchenPhotoUrls: string[];
+  profileImageUrl: string | null;
 };
 
 @Injectable()
@@ -38,6 +40,20 @@ export class CookService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
   ) {}
+
+  private getImageExtensionFromMime(mimeType: string): string | null {
+    switch (mimeType) {
+      case 'image/jpeg':
+      case 'image/jpg':
+        return 'jpg';
+      case 'image/png':
+        return 'png';
+      case 'image/webp':
+        return 'webp';
+      default:
+        return null;
+    }
+  }
 
   private parseScheduleRangeOrThrow(workStartAt: string, workEndAt: string) {
     const start = new Date(workStartAt);
@@ -99,6 +115,71 @@ export class CookService {
     };
   }
 
+  async updateMyProfileImage(
+    userId: string,
+    file: { mimetype: string; buffer: Buffer } | undefined,
+  ) {
+    if (!file) {
+      throw new BadRequestException('Profile image file is required');
+    }
+
+    const ext = this.getImageExtensionFromMime(file.mimetype);
+    if (!ext) {
+      throw new BadRequestException('Profile image must be JPEG, PNG, or WebP');
+    }
+
+    const cook = await this.prisma.cook.findUnique({
+      where: { userId },
+      select: { id: true, profileImageUrl: true },
+    });
+    if (!cook) {
+      throw new NotFoundException('Cook profile not found');
+    }
+
+    const storedPath = await this.storage.saveCookProfileImage(cook.id, file.buffer, ext);
+    await this.prisma.cook.update({
+      where: { id: cook.id },
+      data: { profileImageUrl: storedPath },
+    });
+
+    if (cook.profileImageUrl) {
+      await this.storage.removeStoredFiles([cook.profileImageUrl]);
+    }
+
+    return { profileImageUrl: this.storage.getPublicUrl(storedPath) };
+  }
+
+  async getMyInformations(userId: string) {
+    const cook = await this.prisma.cook.findUnique({
+      where: { userId },
+      select: {
+        id: true,
+        profileImageUrl: true,
+        user: {
+          select: {
+            phone: true,
+          },
+        },
+      },
+    });
+    if (!cook) {
+      throw new NotFoundException('Cook profile not found');
+    }
+
+    const dishStats = await this.prisma.dish.aggregate({
+      where: { cookId: cook.id },
+      _avg: { cookingTime: true },
+      _count: { _all: true },
+    });
+
+    return {
+      image: cook.profileImageUrl ? this.storage.getPublicUrl(cook.profileImageUrl) : null,
+      phone: cook.user.phone,
+      avgTimeCooking: dishStats._avg.cookingTime ?? 0,
+      countDishes: dishStats._count._all,
+    };
+  }
+
   async listForClient(params: {
     page: number;
     limit: number;
@@ -151,6 +232,9 @@ export class CookService {
         const { verification, ...rest } = cook;
         return {
           ...rest,
+          profileImageUrl: cook.profileImageUrl
+            ? this.storage.getPublicUrl(cook.profileImageUrl)
+            : null,
           kitchenPhotoUrls: verification
             ? verification.kitchenPhotoUrls.map((path) =>
                 this.storage.getPublicUrl(path),
@@ -177,6 +261,7 @@ export class CookService {
         id: true,
         businessName: true,
         bio: true,
+        profileImageUrl: true,
         rating: true,
         totalReviews: true,
         latitude: true,
@@ -210,6 +295,7 @@ export class CookService {
             isAvailable: true,
             cookingTime: true,
             preparationType: true,
+            portionCount: true,
           },
         },
       },
@@ -221,6 +307,9 @@ export class CookService {
         id: cook.id,
         businessName: cook.businessName,
         bio: cook.bio,
+        profileImageUrl: cook.profileImageUrl
+          ? this.storage.getPublicUrl(cook.profileImageUrl)
+          : null,
         rating: cook.rating,
         totalReviews: cook.totalReviews,
         latitude: cook.latitude,

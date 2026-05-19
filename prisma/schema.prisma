@@ -21,9 +21,11 @@ enum VerificationStatus {
 }
 
 enum OrderStatus {
+  AWAITING_COOK_ACCEPTANCE
+  AWAITING_PAYMENT
   PENDING
   CONFIRMED
-  PREPARING
+  COOKING
   READY
   ON_THE_WAY
   DELIVERED
@@ -104,6 +106,7 @@ model Cook {
   userId            String              @unique
   businessName      String
   bio               String?
+  profileImageUrl   String?
   verificationStatus VerificationStatus @default(PENDING)
   latitude          Float?
   longitude         Float?
@@ -156,6 +159,8 @@ model Dish {
   calories    Int?
   cookingTime Int         @default(0) // minutes
   preparationType DishPreparationType @default(FAST)
+  /// How many portions/servings this dish represents (e.g. meal for 2 → 2)
+  portionCount Int       @default(1)
 
   cook        Cook        @relation(fields: [cookId], references: [id])
   orderItems  OrderItem[]
@@ -189,10 +194,27 @@ model Order {
   orderNumber    String         @unique
   userId         String
   cookId         String
-  status         OrderStatus    @default(PENDING)
+  /// Snapshot of the basket/cart used at checkout; nullable for legacy rows
+  basketId       String?
+  status         OrderStatus    @default(AWAITING_COOK_ACCEPTANCE)
   totalAmount    Int
   deliveryFee    Int            @default(0)
+  /// Snapshot: city, street, house (single line as entered at checkout)
   deliveryAddress String
+  discountAmount Int            @default(0)
+  entrance       String?
+  intercom       String?
+  floor          String?
+  apartment      String?
+  courierComment String?
+  /// Delivery contact; empty on legacy rows before this feature
+  contactPhone   String         @default("")
+  /// Relative path under uploads/ from multipart checkout photo
+  checkoutPhotoPath String?
+  /// Set when cook rejects or CRM/admin cancels with a message
+  rejectionReason String?
+  /// Max dish cookingTime (minutes) snapshot when cook accepts
+  preparationTimeMinutes Int?
 
   paymentStatus  PaymentStatus  @default(PENDING)
   paymentProvider PaymentProvider?
@@ -209,6 +231,7 @@ model Order {
 
   @@index([userId])
   @@index([cookId])
+  @@index([basketId])
 }
 
 model OrderItem {
@@ -296,6 +319,11 @@ model Address {
   latitude  Float?
   longitude Float?
   isDefault Boolean  @default(false)
+  entrance   String?
+  intercom   String?
+  floor      String?
+  apartment  String?
+  contactPhone String?
 
   user      User     @relation(fields: [userId], references: [id])
 

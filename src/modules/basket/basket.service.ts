@@ -2,8 +2,45 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../core/database/prisma.service';
+
+const basketCartInclude = {
+  items: {
+    include: {
+      dish: {
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          price: true,
+          imageUrl: true,
+          isAvailable: true,
+          portionCount: true,
+          cookId: true,
+          cook: {
+            select: {
+              id: true,
+              businessName: true,
+              rating: true,
+              user: {
+                select: {
+                  firstName: true,
+                  lastName: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' as const },
+  },
+} satisfies Prisma.CartInclude;
+
+type CartWithBasketItems = Prisma.CartGetPayload<{ include: typeof basketCartInclude }>;
 
 @Injectable()
 export class BasketService {
@@ -15,80 +52,222 @@ export class BasketService {
     }
   }
 
-  async addItem(userId: string, dishId: string, quantity: number) {
-    const dish = await this.prisma.dish.findUnique({
-      where: { id: dishId },
+  private mapCookSummary(cart: CartWithBasketItems) {
+    const first = cart.items[0]?.dish.cook;
+    if (!first) {
+      return null;
+    }
+    return {
+      id: first.id,
+      businessName: first.businessName,
+      rating: first.rating,
+      chefFirstName: first.user.firstName,
+      chefLastName: first.user.lastName,
+    };
+  }
+
+  private mapCartToResponse(cart: CartWithBasketItems | null) {
+    if (!cart || cart.items.length === 0) {
+      return {
+        cookId: null as string | null,
+        cook: null,
+        items: [] as Array<{
+          id: string;
+          dishId: string;
+          quantity: number;
+          lineSubtotal: number;
+          dish: {
+            id: string;
+            name: string;
+            description: string;
+            price: number;
+            imageUrl: string | null;
+            isAvailable: boolean;
+            portionCount: number;
+            cookId: string;
+          };
+        }>,
+        itemsCount: 0,
+        itemsTotal: 0,
+      };
+    }
+
+    const cookId = cart.cookId ?? cart.items[0].dish.cookId;
+    const items = cart.items.map((item) => {
+      const { cook: _c, ...dish } = item.dish;
+      return {
+        id: item.id,
+        dishId: item.dishId,
+        quantity: item.quantity,
+        lineSubtotal: item.quantity * item.dish.price,
+        dish,
+      };
+    });
+    const itemsTotal = items.reduce((sum, row) => sum + row.lineSubtotal, 0);
+    const itemsCount = cart.items.reduce((sum, item) => sum + item.quantity, 0);
+
+    return {
+      cookId,
+      cook: this.mapCookSummary(cart),
+      items,
+      itemsCount,
+      itemsTotal,
+    };
+  }
+
+  private async loadCartForUser(userId: string): Promise<CartWithBasketItems | null> {
+    return this.prisma.cart.findUnique({
+      where: { userId },
+      include: basketCartInclude,
+    });
+  }
+
+  async getCart(userId: string) {
+    const cart = await this.loadCartForUser(userId);
+    return this.mapCartToResponse(cart);
+  }
+
+  async addItems(userId: string, items: Array<{ dishId: string; quantity: number }>) {
+    if (!userId) {
+      throw new UnauthorizedException('Authenticated user is required');
+    }
+
+    const dishOrder: string[] = [];
+    const sumByDish = new Map<string, number>();
+    for (const { dishId, quantity } of items) {
+      sumByDish.set(dishId, (sumByDish.get(dishId) ?? 0) + quantity);
+      if (!dishOrder.includes(dishId)) {
+        dishOrder.push(dishId);
+      }
+    }
+
+    for (const dishId of dishOrder) {
+      const total = sumByDish.get(dishId)!;
+      if (total > 100) {
+        throw new BadRequestException('Merged quantity per dish must not exceed 100');
+      }
+    }
+
+    const dishes = await this.prisma.dish.findMany({
+      where: { id: { in: dishOrder } },
       select: { id: true, cookId: true, isAvailable: true },
     });
-    if (!dish) {
-      throw new NotFoundException('Dish not found');
+    const foundIds = new Set(dishes.map((d) => d.id));
+    for (const id of dishOrder) {
+      if (!foundIds.has(id)) {
+        throw new NotFoundException('Dish not found');
+      }
     }
-    if (!dish.isAvailable) {
+
+    const unavailable = dishes.find((d) => !d.isAvailable);
+    if (unavailable) {
       throw new BadRequestException('Dish is not available');
     }
 
-    const cart = await this.prisma.cart.upsert({
-      where: { userId },
-      update: {},
-      create: { userId, cookId: dish.cookId },
-      select: { id: true, cookId: true },
-    });
-    this.ensureCookConstraintOrThrow(cart.cookId, dish.cookId);
+    const dishById = new Map(dishes.map((d) => [d.id, d]));
 
-    if (cart.cookId !== dish.cookId) {
-      await this.prisma.cart.update({
+    return this.prisma.$transaction(async (tx) => {
+      const firstDish = dishById.get(dishOrder[0])!;
+
+      let cart = await tx.cart.upsert({
+        where: { userId },
+        update: {},
+        create: { userId, cookId: firstDish.cookId },
+        select: { id: true, cookId: true },
+      });
+
+      for (const dishId of dishOrder) {
+        const dish = dishById.get(dishId)!;
+        this.ensureCookConstraintOrThrow(cart.cookId, dish.cookId);
+
+        if (cart.cookId !== dish.cookId) {
+          await tx.cart.update({
+            where: { id: cart.id },
+            data: { cookId: dish.cookId },
+          });
+          cart = { ...cart, cookId: dish.cookId };
+        }
+
+        const addQty = sumByDish.get(dishId)!;
+        const existing = await tx.cartItem.findFirst({
+          where: { cartId: cart.id, dishId: dish.id },
+          select: { id: true, quantity: true },
+        });
+
+        if (existing) {
+          await tx.cartItem.update({
+            where: { id: existing.id },
+            data: { quantity: existing.quantity + addQty },
+          });
+        } else {
+          await tx.cartItem.create({
+            data: { cartId: cart.id, dishId: dish.id, quantity: addQty },
+          });
+        }
+      }
+
+      const updated = await tx.cart.findUnique({
         where: { id: cart.id },
-        data: { cookId: dish.cookId },
+        include: basketCartInclude,
       });
+
+      return this.mapCartToResponse(updated);
+    });
+  }
+
+  async updateItemQuantity(userId: string, cartItemId: string, quantity: number) {
+    const item = await this.prisma.cartItem.findFirst({
+      where: { id: cartItemId, cart: { userId } },
+      select: { id: true, cartId: true },
+    });
+    if (!item) {
+      throw new NotFoundException('Basket item not found');
     }
 
-    const existing = await this.prisma.cartItem.findFirst({
-      where: { cartId: cart.id, dishId: dish.id },
-      select: { id: true, quantity: true },
+    await this.prisma.cartItem.update({
+      where: { id: item.id },
+      data: { quantity },
     });
 
-    if (existing) {
-      await this.prisma.cartItem.update({
-        where: { id: existing.id },
-        data: { quantity: existing.quantity + quantity },
-      });
-    } else {
-      await this.prisma.cartItem.create({
-        data: { cartId: cart.id, dishId: dish.id, quantity },
-      });
+    const cart = await this.loadCartForUser(userId);
+    return this.mapCartToResponse(cart);
+  }
+
+  async removeItem(userId: string, cartItemId: string) {
+    const item = await this.prisma.cartItem.findFirst({
+      where: { id: cartItemId, cart: { userId } },
+      select: { id: true, cartId: true },
+    });
+    if (!item) {
+      throw new NotFoundException('Basket item not found');
     }
 
-    const updated = await this.prisma.cart.findUnique({
-      where: { id: cart.id },
-      include: {
-        items: {
-          include: {
-            dish: {
-              select: {
-                id: true,
-                name: true,
-                price: true,
-                imageUrl: true,
-                isAvailable: true,
-              },
-            },
-          },
-          orderBy: { createdAt: 'desc' },
-        },
-      },
-    });
+    await this.prisma.cartItem.delete({ where: { id: item.id } });
 
-    return {
-      cookId: updated?.cookId ?? null,
-      items:
-        updated?.items.map((item) => ({
-          id: item.id,
-          dishId: item.dishId,
-          quantity: item.quantity,
-          dish: item.dish,
-        })) ?? [],
-      itemsCount:
-        updated?.items.reduce((sum, item) => sum + item.quantity, 0) ?? 0,
-    };
+    const remaining = await this.prisma.cartItem.count({
+      where: { cartId: item.cartId },
+    });
+    if (remaining === 0) {
+      await this.prisma.cart.delete({ where: { id: item.cartId } });
+      return this.mapCartToResponse(null);
+    }
+
+    const cart = await this.loadCartForUser(userId);
+    return this.mapCartToResponse(cart);
+  }
+
+  async clearCart(userId: string) {
+    const cart = await this.prisma.cart.findUnique({
+      where: { userId },
+      select: { id: true },
+    });
+    if (!cart) {
+      return this.mapCartToResponse(null);
+    }
+
+    await this.prisma.cartItem.deleteMany({ where: { cartId: cart.id } });
+    await this.prisma.cart.delete({ where: { id: cart.id } });
+
+    return this.mapCartToResponse(null);
   }
 }
