@@ -7,9 +7,11 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { runMigrationsOnStartup } from './run-migrations';
 // import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 
 async function bootstrap() {
+  runMigrationsOnStartup();
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     cors: true,
   });

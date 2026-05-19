@@ -1,0 +1,31 @@
+-- Idempotent repair for production DBs that lag behind the Prisma schema.
+-- Safe to re-run: only adds objects that are still missing.
+
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "discountAmount" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "entrance" TEXT;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "intercom" TEXT;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "floor" TEXT;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "apartment" TEXT;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "courierComment" TEXT;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "contactPhone" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "checkoutPhotoPath" TEXT;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "rejectionReason" TEXT;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "preparationTimeMinutes" INTEGER;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "basketId" TEXT;
+
+CREATE INDEX IF NOT EXISTS "Order_basketId_idx" ON "Order"("basketId");
+
+ALTER TABLE "Cook" ADD COLUMN IF NOT EXISTS "profileImageUrl" TEXT;
+ALTER TABLE "Cook" ADD COLUMN IF NOT EXISTS "workStartAt" TIMESTAMPTZ(3);
+ALTER TABLE "Cook" ADD COLUMN IF NOT EXISTS "workEndAt" TIMESTAMPTZ(3);
+
+ALTER TABLE "Dish" ADD COLUMN IF NOT EXISTS "cookingTime" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "Dish" ADD COLUMN IF NOT EXISTS "portionCount" INTEGER NOT NULL DEFAULT 1;
+
+DO $$ BEGIN
+  CREATE TYPE "DishPreparationType" AS ENUM ('FAST', 'LONG');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+ALTER TABLE "Dish" ADD COLUMN IF NOT EXISTS "preparationType" "DishPreparationType" NOT NULL DEFAULT 'FAST';
