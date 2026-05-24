@@ -48,7 +48,7 @@ export class CookController {
   @ApiOperation({
     summary: 'List cooks (storefront)',
     description:
-      'Paginated verified cooks for the client app. Optional `isAvailable`, `q` (business name contains).',
+      'Paginated verified cooks for the client app. Each item includes `countDishes` (total catalog dishes). Optional `isAvailable`, `q` (business name contains).',
   })
   async listForClient(@Query() query: ListCooksQueryDto) {
     return this.cookService.listForClient({

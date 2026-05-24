@@ -23,15 +23,21 @@ const publicCookSelect = {
       kitchenPhotoUrls: true,
     },
   },
+  _count: {
+    select: {
+      dishes: true,
+    },
+  },
 } satisfies Prisma.CookSelect;
 
 type PublicCookRow = Prisma.CookGetPayload<{
   select: typeof publicCookSelect;
 }>;
 
-export type PublicCookSummary = Omit<PublicCookRow, 'verification'> & {
+export type PublicCookSummary = Omit<PublicCookRow, 'verification' | '_count'> & {
   kitchenPhotoUrls: string[];
   profileImageUrl: string | null;
+  countDishes: number;
 };
 
 @Injectable()
@@ -229,9 +235,10 @@ export class CookService {
 
     return {
       items: items.map((cook) => {
-        const { verification, ...rest } = cook;
+        const { verification, _count, ...rest } = cook;
         return {
           ...rest,
+          countDishes: _count.dishes,
           profileImageUrl: cook.profileImageUrl
             ? this.storage.getPublicUrl(cook.profileImageUrl)
             : null,

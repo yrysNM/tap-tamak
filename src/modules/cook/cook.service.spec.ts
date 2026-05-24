@@ -158,6 +158,44 @@ describe('CookService', () => {
     });
   });
 
+  it('returns paginated cooks with countDishes per item', async () => {
+    const cookRow = {
+      id: 'cook-1',
+      businessName: 'Aspan Kitchen',
+      bio: 'Homemade meals',
+      profileImageUrl: 'cook-profile/cook-1.jpg',
+      rating: 4.8,
+      totalReviews: 27,
+      latitude: 43.2,
+      longitude: 76.9,
+      isAvailable: true,
+      workStartAt: new Date('2000-01-01T00:00:00.000Z'),
+      workEndAt: new Date('2999-01-01T00:00:00.000Z'),
+      verification: { kitchenPhotoUrls: ['cook-verification/photo-1.jpg'] },
+      _count: { dishes: 12 },
+    };
+
+    const prisma = {
+      $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
+      cook: {
+        findMany: jest.fn().mockResolvedValue([cookRow]),
+        count: jest.fn().mockResolvedValue(1),
+      },
+    };
+    const storage = {
+      getPublicUrl: jest.fn((path: string) => `/api/v1/uploads/${path}`),
+    };
+
+    const service = new CookService(prisma as any, storage as any);
+    const result = await service.listForClient({ page: 1, limit: 20 });
+
+    expect(result.meta).toEqual({ total: 1, page: 1, limit: 20 });
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].countDishes).toBe(12);
+    expect(result.items[0]).not.toHaveProperty('_count');
+    expect(result.items[0].profileImageUrl).toBe('/api/v1/uploads/cook-profile/cook-1.jpg');
+  });
+
   it('throws when cook profile is missing for informations endpoint', async () => {
     const prisma = {
       cook: {
