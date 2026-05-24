@@ -21,7 +21,7 @@ export class ListCrmOrdersQueryDto {
 
   @ApiPropertyOptional({
     description:
-      'When omitted, lists only orders awaiting cook acceptance. Pass any status to filter explicitly.',
+      'When omitted, lists only orders awaiting payment confirmation. Pass any status to filter explicitly.',
     enum: OrderStatus,
   })
   @IsOptional()

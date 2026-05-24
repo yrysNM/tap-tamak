@@ -215,6 +215,10 @@ model Order {
   rejectionReason String?
   /// Max dish cookingTime (minutes) snapshot when cook accepts
   preparationTimeMinutes Int?
+  /// When the cook accepted / kitchen started (COOKING)
+  cookingStartedAt DateTime?
+  /// When the cook marked the order ready
+  readyAt          DateTime?
 
   paymentStatus  PaymentStatus  @default(PENDING)
   paymentProvider PaymentProvider?

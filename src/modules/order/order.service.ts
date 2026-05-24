@@ -18,9 +18,27 @@ import { isCookActiveNow } from '../cook/cook-availability.util';
 import { CheckoutOrderDto } from './dto/checkout-order.dto';
 import { CheckoutMultipartFormDto } from './dto/checkout-multipart-form.dto';
 import { AdminPatchOrderDto } from './dto/admin-patch-order.dto';
+import { AdminSetPaymentStatusDto } from './dto/admin-set-payment-status.dto';
+import type { PrepareFromCartResponseDto } from './dto/prepare-from-cart-response.dto';
 
-interface CreateOrderResult {
+export interface CreateOrderResult {
   orderId: string;
+  orderIds: string[];
+}
+
+interface CheckoutCookSummary {
+  id: string;
+  businessName: string;
+  rating: number;
+  chefFirstName: string;
+  chefLastName: string;
+}
+
+interface CheckoutCookGroup {
+  cookId: string;
+  cook: CheckoutCookSummary;
+  items: CartForCheckout['items'];
+  pricing: CheckoutPricing;
 }
 
 const cartForCheckoutInclude = Prisma.validator<Prisma.CartInclude>()({
@@ -39,6 +57,29 @@ interface CheckoutPricing {
 }
 
 const COOK_HIDDEN_STATUSES: OrderStatus[] = [OrderStatus.AWAITING_PAYMENT];
+
+function assertOrderPaymentCompleted(paymentStatus: PaymentStatus): void {
+  if (paymentStatus !== PaymentStatus.COMPLETED) {
+    throw new BadRequestException(
+      'Order payment must be completed before changing order status or accepting the order',
+    );
+  }
+}
+
+function cookingLifecycleTimestamps(
+  currentStatus: OrderStatus,
+  nextStatus: OrderStatus,
+): { cookingStartedAt?: Date; readyAt?: Date } {
+  const data: { cookingStartedAt?: Date; readyAt?: Date } = {};
+  const now = new Date();
+  if (nextStatus === OrderStatus.COOKING && currentStatus !== OrderStatus.COOKING) {
+    data.cookingStartedAt = now;
+  }
+  if (nextStatus === OrderStatus.READY && currentStatus !== OrderStatus.READY) {
+    data.readyAt = now;
+  }
+  return data;
+}
 
 const CHECKOUT_IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_CHECKOUT_PHOTO_BYTES = 8 * 1024 * 1024;
@@ -101,12 +142,13 @@ export class OrderService {
     };
   }
 
-  private computePricing(cart: CartForCheckout, _discountAmountInput: number): CheckoutPricing {
-    const itemsTotal = cart.items.reduce((sum, item) => sum + item.quantity * item.dish.price, 0);
+  private computePricingForItems(
+    items: CartForCheckout['items'],
+    _discountAmountInput: number,
+  ): CheckoutPricing {
+    const itemsTotal = items.reduce((sum, item) => sum + item.quantity * item.dish.price, 0);
     const platformFeePercent = Number(process.env.PLATFORM_FEE_PERCENT ?? 0);
     const platformFee = Math.floor((itemsTotal * platformFeePercent) / 100);
-    // Enforce server-side dish-only pricing for final order amount.
-    // Delivery and discount remain present in the response shape for compatibility.
     const deliveryFee = 0;
     const discountAmount = 0;
     const totalAmount = itemsTotal;
@@ -120,7 +162,69 @@ export class OrderService {
     };
   }
 
-  private async resolveCheckout(userId: string, dto: CheckoutOrderDto) {
+  private sumCheckoutPricing(groups: CheckoutCookGroup[]): CheckoutPricing {
+    const itemsTotal = groups.reduce((sum, g) => sum + g.pricing.itemsTotal, 0);
+    const platformFee = groups.reduce((sum, g) => sum + g.pricing.platformFee, 0);
+    const deliveryFee = groups.reduce((sum, g) => sum + g.pricing.deliveryFee, 0);
+    const discountAmount = groups.reduce((sum, g) => sum + g.pricing.discountAmount, 0);
+    const totalAmount = groups.reduce((sum, g) => sum + g.pricing.totalAmount, 0);
+    const platformFeePercent = groups[0]?.pricing.platformFeePercent ?? 0;
+    return {
+      itemsTotal,
+      platformFeePercent,
+      platformFee,
+      deliveryFee,
+      discountAmount,
+      totalAmount,
+    };
+  }
+
+  private groupCartItemsByCook(cart: CartForCheckout): Map<string, CartForCheckout['items']> {
+    const byCook = new Map<string, CartForCheckout['items']>();
+    for (const item of cart.items) {
+      const cookId = item.dish.cookId;
+      const list = byCook.get(cookId);
+      if (list) {
+        list.push(item);
+      } else {
+        byCook.set(cookId, [item]);
+      }
+    }
+    return byCook;
+  }
+
+  private async persistCheckoutAddress(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    checkout: CheckoutOrderDto,
+  ): Promise<void> {
+    if (checkout.saveAddress === true && checkout.city && checkout.savedAddressLabel) {
+      await tx.address.updateMany({
+        where: { userId, isDefault: true },
+        data: { isDefault: false },
+      });
+      await tx.address.create({
+        data: {
+          userId,
+          label: checkout.savedAddressLabel.trim(),
+          street: checkout.addressLine.trim(),
+          city: checkout.city.trim(),
+          entrance: checkout.entrance?.trim() || null,
+          intercom: checkout.intercom?.trim() || null,
+          floor: checkout.floor?.trim() || null,
+          apartment: checkout.apartment?.trim() || null,
+          contactPhone: checkout.contactPhone.trim(),
+          isDefault: true,
+        },
+      });
+    }
+  }
+
+  private computePricing(cart: CartForCheckout, _discountAmountInput: number): CheckoutPricing {
+    return this.computePricingForItems(cart.items, _discountAmountInput);
+  }
+
+  private async resolveCheckoutGroups(userId: string, dto: CheckoutOrderDto) {
     const cart = await this.prisma.cart.findUnique({
       where: { userId },
       include: cartForCheckoutInclude,
@@ -131,61 +235,77 @@ export class OrderService {
     }
 
     const dishes = cart.items.map((item) => item.dish);
-    const uniqueCookIds = new Set(dishes.map((d) => d.cookId));
-    if (uniqueCookIds.size > 1) {
-      throw new BadRequestException('Cart must contain dishes from a single cook');
-    }
-
     if (dishes.some((d) => !d.isAvailable)) {
       throw new BadRequestException('Some dishes are not available');
     }
 
-    const cookId = cart.cookId ?? cart.items[0].dish.cookId;
+    const byCook = this.groupCartItemsByCook(cart);
+    const groups: CheckoutCookGroup[] = [];
 
-    const cook = await this.prisma.cook.findUnique({
-      where: { id: cookId },
-      select: {
-        id: true,
-        businessName: true,
-        rating: true,
-        verificationStatus: true,
-        isAvailable: true,
-        workStartAt: true,
-        workEndAt: true,
-        user: { select: { firstName: true, lastName: true } },
-      },
-    });
-    if (!cook) {
-      throw new NotFoundException('Cook not found');
-    }
-    if (!isCookActiveNow(cook)) {
-      throw new BadRequestException('Cook is not active at this time');
-    }
+    for (const [cookId, items] of byCook) {
+      const cook = await this.prisma.cook.findUnique({
+        where: { id: cookId },
+        select: {
+          id: true,
+          businessName: true,
+          rating: true,
+          verificationStatus: true,
+          isAvailable: true,
+          workStartAt: true,
+          workEndAt: true,
+          user: { select: { firstName: true, lastName: true } },
+        },
+      });
+      if (!cook) {
+        throw new NotFoundException('Cook not found');
+      }
+      if (!isCookActiveNow(cook)) {
+        throw new BadRequestException(
+          `Cook "${cook.businessName}" is not active at this time`,
+        );
+      }
 
-    const pricing = this.computePricing(cart, dto.discountAmount ?? 0);
+      groups.push({
+        cookId,
+        cook: {
+          id: cook.id,
+          businessName: cook.businessName,
+          rating: cook.rating,
+          chefFirstName: cook.user.firstName,
+          chefLastName: cook.user.lastName,
+        },
+        items,
+        pricing: this.computePricingForItems(items, dto.discountAmount ?? 0),
+      });
+    }
 
     return {
       cart,
-      cookId,
-      cook: {
-        id: cook.id,
-        businessName: cook.businessName,
-        rating: cook.rating,
-        chefFirstName: cook.user.firstName,
-        chefLastName: cook.user.lastName,
-      },
+      groups,
       dto,
-      pricing,
+      pricing: this.sumCheckoutPricing(groups),
     };
   }
 
-  async prepareFromCart(userId: string, dto: CheckoutOrderDto) {
-    const ctx = await this.resolveCheckout(userId, dto);
-    const { cart, cook, dto: checkout, pricing } = ctx;
+  async prepareFromCart(userId: string, dto: CheckoutOrderDto): Promise<PrepareFromCartResponseDto> {
+    const ctx = await this.resolveCheckoutGroups(userId, dto);
+    const { cart, groups, dto: checkout, pricing } = ctx;
 
     return {
       basketId: cart.id,
-      cook,
+      cook: groups.length === 1 ? groups[0].cook : null,
+      groups: groups.map((group) => ({
+        cook: group.cook,
+        items: group.items.map((item) => ({
+          dishId: item.dishId,
+          name: item.dish.name,
+          quantity: item.quantity,
+          unitPrice: item.dish.price,
+          lineSubtotal: item.quantity * item.dish.price,
+        })),
+        itemsTotal: group.pricing.itemsTotal,
+        totalAmount: group.pricing.totalAmount,
+      })),
       delivery: {
         addressLine: checkout.addressLine,
         city: checkout.city,
@@ -197,13 +317,15 @@ export class OrderService {
         courierComment: checkout.courierComment,
         saveAddress: checkout.saveAddress ?? false,
       },
-      items: cart.items.map((item) => ({
-        dishId: item.dishId,
-        name: item.dish.name,
-        quantity: item.quantity,
-        unitPrice: item.dish.price,
-        lineSubtotal: item.quantity * item.dish.price,
-      })),
+      items: groups.flatMap((group) =>
+        group.items.map((item) => ({
+          dishId: item.dishId,
+          name: item.dish.name,
+          quantity: item.quantity,
+          unitPrice: item.dish.price,
+          lineSubtotal: item.quantity * item.dish.price,
+        })),
+      ),
       itemsTotal: pricing.itemsTotal,
       platformFeePercent: pricing.platformFeePercent,
       platformFee: pricing.platformFee,
@@ -214,72 +336,59 @@ export class OrderService {
   }
 
   async createFromCart(userId: string, dto: CheckoutOrderDto): Promise<CreateOrderResult> {
-    const ctx = await this.resolveCheckout(userId, dto);
-    const { cart, cookId, pricing } = ctx;
+    const ctx = await this.resolveCheckoutGroups(userId, dto);
+    const { cart, groups } = ctx;
     const checkout = dto;
 
-    const orderNumber = `ORD-${Date.now()}`;
+    const orderIds = await this.prisma.$transaction(async (tx) => {
+      const createdIds: string[] = [];
+      const baseOrderNumber = Date.now();
 
-    const order = await this.prisma.$transaction(async (tx) => {
-      const createdOrder = await tx.order.create({
-        data: {
-          orderNumber,
-          userId,
-          cookId,
-          basketId: cart.id,
-          status: OrderStatus.AWAITING_COOK_ACCEPTANCE,
-          totalAmount: pricing.totalAmount,
-          deliveryFee: pricing.deliveryFee,
-          discountAmount: pricing.discountAmount,
-          deliveryAddress: checkout.addressLine.trim(),
-          entrance: checkout.entrance?.trim() || null,
-          intercom: checkout.intercom?.trim() || null,
-          floor: checkout.floor?.trim() || null,
-          apartment: checkout.apartment?.trim() || null,
-          courierComment: checkout.courierComment?.trim() || null,
-          contactPhone: checkout.contactPhone.trim(),
-          paymentStatus: PaymentStatus.PENDING,
-        },
-      });
-
-      await tx.orderItem.createMany({
-        data: cart.items.map((item) => ({
-          orderId: createdOrder.id,
-          dishId: item.dishId,
-          quantity: item.quantity,
-          price: item.dish.price,
-          name: item.dish.name,
-        })),
-      });
-
-      if (checkout.saveAddress === true && checkout.city && checkout.savedAddressLabel) {
-        await tx.address.updateMany({
-          where: { userId, isDefault: true },
-          data: { isDefault: false },
-        });
-        await tx.address.create({
+      for (let index = 0; index < groups.length; index += 1) {
+        const group = groups[index];
+        const createdOrder = await tx.order.create({
           data: {
+            orderNumber: `ORD-${baseOrderNumber}-${index + 1}`,
             userId,
-            label: checkout.savedAddressLabel.trim(),
-            street: checkout.addressLine.trim(),
-            city: checkout.city.trim(),
+            cookId: group.cookId,
+            basketId: cart.id,
+            status: OrderStatus.AWAITING_PAYMENT,
+            totalAmount: group.pricing.totalAmount,
+            deliveryFee: group.pricing.deliveryFee,
+            discountAmount: group.pricing.discountAmount,
+            deliveryAddress: checkout.addressLine.trim(),
             entrance: checkout.entrance?.trim() || null,
             intercom: checkout.intercom?.trim() || null,
             floor: checkout.floor?.trim() || null,
             apartment: checkout.apartment?.trim() || null,
+            courierComment: checkout.courierComment?.trim() || null,
             contactPhone: checkout.contactPhone.trim(),
-            isDefault: true,
+            paymentStatus: PaymentStatus.PENDING,
           },
         });
+
+        await tx.orderItem.createMany({
+          data: group.items.map((item) => ({
+            orderId: createdOrder.id,
+            dishId: item.dishId,
+            quantity: item.quantity,
+            price: item.dish.price,
+            name: item.dish.name,
+          })),
+        });
+
+        createdIds.push(createdOrder.id);
       }
+
+      await this.persistCheckoutAddress(tx, userId, checkout);
 
       await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
       await tx.cart.delete({ where: { id: cart.id } });
 
-      return createdOrder;
+      return createdIds;
     });
 
-    return { orderId: order.id };
+    return { orderId: orderIds[0], orderIds };
   }
 
   async createFromCartMultipart(
@@ -289,75 +398,62 @@ export class OrderService {
   ): Promise<CreateOrderResult> {
     this.assertValidCheckoutPhoto(photo);
     const checkout = this.multipartFormToCheckoutDto(form);
-    const ctx = await this.resolveCheckout(userId, checkout);
-    const { cart, cookId, pricing } = ctx;
+    const ctx = await this.resolveCheckoutGroups(userId, checkout);
+    const { cart, groups } = ctx;
 
     const ext = this.extForCheckoutImageMime(photo.mimetype);
     const checkoutPhotoPath = await this.storage.saveOrderCheckoutPhoto(userId, photo.buffer, ext);
 
-    const orderNumber = `ORD-${Date.now()}`;
+    const orderIds = await this.prisma.$transaction(async (tx) => {
+      const createdIds: string[] = [];
+      const baseOrderNumber = Date.now();
 
-    const order = await this.prisma.$transaction(async (tx) => {
-      const createdOrder = await tx.order.create({
-        data: {
-          orderNumber,
-          userId,
-          cookId,
-          basketId: cart.id,
-          status: OrderStatus.AWAITING_COOK_ACCEPTANCE,
-          totalAmount: pricing.totalAmount,
-          deliveryFee: pricing.deliveryFee,
-          discountAmount: pricing.discountAmount,
-          deliveryAddress: checkout.addressLine.trim(),
-          entrance: checkout.entrance?.trim() || null,
-          intercom: checkout.intercom?.trim() || null,
-          floor: checkout.floor?.trim() || null,
-          apartment: checkout.apartment?.trim() || null,
-          courierComment: null,
-          contactPhone: checkout.contactPhone.trim(),
-          checkoutPhotoPath,
-          paymentStatus: PaymentStatus.PENDING,
-        },
-      });
-
-      await tx.orderItem.createMany({
-        data: cart.items.map((item) => ({
-          orderId: createdOrder.id,
-          dishId: item.dishId,
-          quantity: item.quantity,
-          price: item.dish.price,
-          name: item.dish.name,
-        })),
-      });
-
-      if (checkout.saveAddress === true && checkout.city && checkout.savedAddressLabel) {
-        await tx.address.updateMany({
-          where: { userId, isDefault: true },
-          data: { isDefault: false },
-        });
-        await tx.address.create({
+      for (let index = 0; index < groups.length; index += 1) {
+        const group = groups[index];
+        const createdOrder = await tx.order.create({
           data: {
+            orderNumber: `ORD-${baseOrderNumber}-${index + 1}`,
             userId,
-            label: checkout.savedAddressLabel.trim(),
-            street: checkout.addressLine.trim(),
-            city: checkout.city.trim(),
+            cookId: group.cookId,
+            basketId: cart.id,
+            status: OrderStatus.AWAITING_PAYMENT,
+            totalAmount: group.pricing.totalAmount,
+            deliveryFee: group.pricing.deliveryFee,
+            discountAmount: group.pricing.discountAmount,
+            deliveryAddress: checkout.addressLine.trim(),
             entrance: checkout.entrance?.trim() || null,
             intercom: checkout.intercom?.trim() || null,
             floor: checkout.floor?.trim() || null,
             apartment: checkout.apartment?.trim() || null,
+            courierComment: null,
             contactPhone: checkout.contactPhone.trim(),
-            isDefault: true,
+            checkoutPhotoPath: index === 0 ? checkoutPhotoPath : null,
+            paymentStatus: PaymentStatus.PENDING,
           },
         });
+
+        await tx.orderItem.createMany({
+          data: group.items.map((item) => ({
+            orderId: createdOrder.id,
+            dishId: item.dishId,
+            quantity: item.quantity,
+            price: item.dish.price,
+            name: item.dish.name,
+          })),
+        });
+
+        createdIds.push(createdOrder.id);
       }
+
+      await this.persistCheckoutAddress(tx, userId, checkout);
 
       await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
       await tx.cart.delete({ where: { id: cart.id } });
 
-      return createdOrder;
+      return createdIds;
     });
 
-    return { orderId: order.id };
+    return { orderId: orderIds[0], orderIds };
   }
 
   async acceptCookOrder(
@@ -377,6 +473,7 @@ export class OrderService {
     if (order.status !== OrderStatus.AWAITING_COOK_ACCEPTANCE) {
       throw new BadRequestException('Order is not awaiting cook acceptance');
     }
+    assertOrderPaymentCompleted(order.paymentStatus);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.order.update({
@@ -384,7 +481,8 @@ export class OrderService {
         data: {
           status: OrderStatus.COOKING,
           preparationTimeMinutes,
-        },
+          cookingStartedAt: new Date(),
+        } as Prisma.OrderUpdateInput,
       });
       await tx.notification.create({
         data: {
@@ -617,7 +715,7 @@ export class OrderService {
   async listForAdmin(page = 1, limit = 20, status?: OrderStatus, listAll?: boolean) {
     const where: Prisma.OrderWhereInput = {};
     if (!listAll) {
-      where.status = status ?? OrderStatus.AWAITING_COOK_ACCEPTANCE;
+      where.status = status ?? OrderStatus.AWAITING_PAYMENT;
     } else if (status) {
       where.status = status;
     }
@@ -734,10 +832,50 @@ export class OrderService {
   }
 
   async setOrderStatusByAdmin(orderId: string, status: OrderStatus): Promise<OrderWithAdminInclude> {
-    await this.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    const order = await this.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    assertOrderPaymentCompleted(order.paymentStatus);
     await this.prisma.order.update({
       where: { id: orderId },
-      data: { status },
+      data: {
+        status,
+        ...cookingLifecycleTimestamps(order.status, status),
+      },
+    });
+    return this.getOrderByIdForAdmin(orderId);
+  }
+
+  async setOrderPaymentStatusByAdmin(
+    orderId: string,
+    dto: AdminSetPaymentStatusDto,
+  ): Promise<OrderWithAdminInclude> {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (
+      dto.paymentStatus === PaymentStatus.COMPLETED &&
+      order.paymentStatus === PaymentStatus.COMPLETED
+    ) {
+      return this.getOrderByIdForAdmin(orderId);
+    }
+
+    const data: Prisma.OrderUpdateInput = {
+      paymentStatus: dto.paymentStatus,
+    };
+    if ('paymentProvider' in dto) {
+      data.paymentProvider = dto.paymentProvider ?? null;
+    }
+    if (dto.paymentId !== undefined) {
+      data.paymentId = dto.paymentId;
+    }
+    if (dto.paymentStatus === PaymentStatus.COMPLETED && order.status === OrderStatus.AWAITING_PAYMENT) {
+      data.status = OrderStatus.AWAITING_COOK_ACCEPTANCE;
+    }
+
+    await this.prisma.order.update({
+      where: { id: orderId },
+      data,
     });
     return this.getOrderByIdForAdmin(orderId);
   }
@@ -789,7 +927,10 @@ export class OrderService {
 
     const updated = await this.prisma.order.update({
       where: { id: orderId },
-      data: { status: nextStatus },
+      data: {
+        status: nextStatus,
+        ...cookingLifecycleTimestamps(order.status, nextStatus),
+      },
     });
 
     return updated;
@@ -843,35 +984,28 @@ export class OrderService {
     return updated;
   }
 
-  async markOrderPaidByAdmin(orderId: string) {
+  async markOrderPaidByAdmin(orderId: string): Promise<OrderWithAdminInclude> {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!order) {
       throw new NotFoundException('Order not found');
     }
 
-    if (order.status === OrderStatus.AWAITING_PAYMENT) {
-      return this.prisma.order.update({
-        where: { id: orderId },
-        data: {
-          status: OrderStatus.COOKING,
-          paymentStatus: PaymentStatus.COMPLETED,
-          paymentProvider: null,
-        },
-        include: { items: { include: { dish: true } }, user: true, cook: true },
-      });
+    if (order.paymentStatus === PaymentStatus.COMPLETED) {
+      return this.getOrderByIdForAdmin(orderId);
     }
 
-    if (order.status === OrderStatus.COOKING && order.paymentStatus === PaymentStatus.PENDING) {
-      return this.prisma.order.update({
-        where: { id: orderId },
-        data: {
-          paymentStatus: PaymentStatus.COMPLETED,
-          paymentProvider: null,
-        },
-        include: { items: { include: { dish: true } }, user: true, cook: true },
-      });
+    const payable =
+      order.status === OrderStatus.AWAITING_PAYMENT &&
+      (order.paymentStatus === PaymentStatus.PENDING ||
+        order.paymentStatus === PaymentStatus.PROCESSING);
+
+    if (!payable) {
+      throw new BadRequestException('Order is not awaiting payment confirmation');
     }
 
-    throw new BadRequestException('Order is not awaiting payment in a payable state');
+    return this.setOrderPaymentStatusByAdmin(orderId, {
+      paymentStatus: PaymentStatus.COMPLETED,
+      paymentProvider: null,
+    });
   }
 }

@@ -28,6 +28,8 @@ import { RejectOrderDto } from './dto/reject-order.dto';
 import { AcceptCookOrderDto } from './dto/accept-cook-order.dto';
 import { ListOrdersQueryDto } from './dto/list-orders-query.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
+import type { PrepareFromCartResponseDto } from './dto/prepare-from-cart-response.dto';
+import type { CreateOrderResult } from './order.service';
 
 @ApiTags('orders')
 @ApiBearerAuth()
@@ -38,18 +40,24 @@ export class OrderController {
 
   @Roles(Role.USER)
   @Post()
-  @ApiOperation({ summary: 'Create order from cart (checkout payload required)' })
+  @ApiOperation({
+    summary: 'Create order from cart (checkout payload required)',
+    description: 'Creates the order in AWAITING_PAYMENT until CRM confirms manual payment.',
+  })
   async createFromCart(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CheckoutOrderDto,
-  ): Promise<{ orderId: string }> {
+  ): Promise<CreateOrderResult> {
     return this.orderService.createFromCart(user.id, dto);
   }
 
   @Roles(Role.USER)
   @Post('prepare')
   @ApiOperation({ summary: 'Validate cart and return checkout totals without creating an order' })
-  async prepareFromCart(@CurrentUser() user: AuthenticatedUser, @Body() dto: CheckoutOrderDto) {
+  async prepareFromCart(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CheckoutOrderDto,
+  ): Promise<PrepareFromCartResponseDto> {
     return this.orderService.prepareFromCart(user.id, dto);
   }
 
@@ -58,7 +66,7 @@ export class OrderController {
   @ApiOperation({
     summary: 'Create order from cart (multipart: address fields + photo, no courier comment)',
     description:
-      'Creates the order in AWAITING_COOK_ACCEPTANCE for the cook to accept or reject before payment.',
+      'Creates the order in AWAITING_PAYMENT until CRM confirms manual payment on the static recipient phone.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -90,7 +98,7 @@ export class OrderController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() form: CheckoutMultipartFormDto,
     @UploadedFile() photo: Express.Multer.File,
-  ): Promise<{ orderId: string }> {
+  ): Promise<CreateOrderResult> {
     return this.orderService.createFromCartMultipart(user.id, form, photo);
   }
 

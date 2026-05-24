@@ -28,6 +28,7 @@ export default () => ({
     webhookSecret: process.env.TILDA_WEBHOOK_SECRET,
   },
   payment: {
+    manualRecipientPhone: process.env.PAYMENT_RECIPIENT_PHONE,
     halyk: {
       clientId: process.env.HALYK_CLIENT_ID,
       clientSecret: process.env.HALYK_CLIENT_SECRET,

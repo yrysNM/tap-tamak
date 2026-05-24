@@ -23,6 +23,7 @@ const basketCartInclude = {
           cook: {
             select: {
               id: true,
+              profileImageUrl: true,
               businessName: true,
               rating: true,
               user: {
@@ -46,24 +47,60 @@ type CartWithBasketItems = Prisma.CartGetPayload<{ include: typeof basketCartInc
 export class BasketService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private ensureCookConstraintOrThrow(currentCookId: string | null, nextCookId: string) {
-    if (currentCookId && currentCookId !== nextCookId) {
-      throw new BadRequestException('Basket must contain dishes from a single cook');
-    }
+  private mapLineItem(item: CartWithBasketItems['items'][number]) {
+    const { cook: _c, ...dish } = item.dish;
+    return {
+      id: item.id,
+      dishId: item.dishId,
+      quantity: item.quantity,
+      lineSubtotal: item.quantity * item.dish.price,
+      dish,
+    };
   }
 
-  private mapCookSummary(cart: CartWithBasketItems) {
-    const first = cart.items[0]?.dish.cook;
-    if (!first) {
-      return null;
-    }
+  private mapCookSummaryFromDishCook(
+    cook: CartWithBasketItems['items'][number]['dish']['cook'],
+  ) {
     return {
-      id: first.id,
-      businessName: first.businessName,
-      rating: first.rating,
-      chefFirstName: first.user.firstName,
-      chefLastName: first.user.lastName,
+      id: cook.id,
+      businessName: cook.businessName,
+      rating: cook.rating,
+      chefFirstName: cook.user.firstName,
+      chefLastName: cook.user.lastName,
+      chefAvatarUrl: cook.profileImageUrl,
     };
+  }
+
+  private buildCookGroups(cart: CartWithBasketItems) {
+    const order: string[] = [];
+    const byCookId = new Map<
+      string,
+      {
+        cookId: string;
+        cook: ReturnType<BasketService['mapCookSummaryFromDishCook']>;
+        items: ReturnType<BasketService['mapLineItem']>[];
+      }
+    >();
+
+    for (const item of cart.items) {
+      const cookId = item.dish.cookId;
+      if (!byCookId.has(cookId)) {
+        order.push(cookId);
+        byCookId.set(cookId, {
+          cookId,
+          cook: this.mapCookSummaryFromDishCook(item.dish.cook),
+          items: [],
+        });
+      }
+      byCookId.get(cookId)!.items.push(this.mapLineItem(item));
+    }
+
+    return order.map((cookId) => {
+      const group = byCookId.get(cookId)!;
+      const itemsCount = group.items.reduce((sum, row) => sum + row.quantity, 0);
+      const itemsTotal = group.items.reduce((sum, row) => sum + row.lineSubtotal, 0);
+      return { ...group, itemsCount, itemsTotal };
+    });
   }
 
   private mapCartToResponse(cart: CartWithBasketItems | null) {
@@ -71,44 +108,29 @@ export class BasketService {
       return {
         cookId: null as string | null,
         cook: null,
-        items: [] as Array<{
-          id: string;
-          dishId: string;
-          quantity: number;
-          lineSubtotal: number;
-          dish: {
-            id: string;
-            name: string;
-            description: string;
-            price: number;
-            imageUrl: string | null;
-            isAvailable: boolean;
-            portionCount: number;
-            cookId: string;
-          };
+        groups: [] as Array<{
+          cookId: string;
+          cook: ReturnType<BasketService['mapCookSummaryFromDishCook']>;
+          items: ReturnType<BasketService['mapLineItem']>[];
+          itemsCount: number;
+          itemsTotal: number;
         }>,
+        items: [] as ReturnType<BasketService['mapLineItem']>[],
         itemsCount: 0,
         itemsTotal: 0,
       };
     }
 
-    const cookId = cart.cookId ?? cart.items[0].dish.cookId;
-    const items = cart.items.map((item) => {
-      const { cook: _c, ...dish } = item.dish;
-      return {
-        id: item.id,
-        dishId: item.dishId,
-        quantity: item.quantity,
-        lineSubtotal: item.quantity * item.dish.price,
-        dish,
-      };
-    });
+    const groups = this.buildCookGroups(cart);
+    const items = groups.flatMap((g) => g.items);
     const itemsTotal = items.reduce((sum, row) => sum + row.lineSubtotal, 0);
     const itemsCount = cart.items.reduce((sum, item) => sum + item.quantity, 0);
+    const singleGroup = groups.length === 1 ? groups[0] : null;
 
     return {
-      cookId,
-      cook: this.mapCookSummary(cart),
+      cookId: singleGroup?.cookId ?? null,
+      cook: singleGroup?.cook ?? null,
+      groups,
       items,
       itemsCount,
       itemsTotal,
@@ -167,26 +189,15 @@ export class BasketService {
     const dishById = new Map(dishes.map((d) => [d.id, d]));
 
     return this.prisma.$transaction(async (tx) => {
-      const firstDish = dishById.get(dishOrder[0])!;
-
       let cart = await tx.cart.upsert({
         where: { userId },
         update: {},
-        create: { userId, cookId: firstDish.cookId },
-        select: { id: true, cookId: true },
+        create: { userId, cookId: null },
+        select: { id: true },
       });
 
       for (const dishId of dishOrder) {
         const dish = dishById.get(dishId)!;
-        this.ensureCookConstraintOrThrow(cart.cookId, dish.cookId);
-
-        if (cart.cookId !== dish.cookId) {
-          await tx.cart.update({
-            where: { id: cart.id },
-            data: { cookId: dish.cookId },
-          });
-          cart = { ...cart, cookId: dish.cookId };
-        }
 
         const addQty = sumByDish.get(dishId)!;
         const existing = await tx.cartItem.findFirst({
@@ -216,6 +227,10 @@ export class BasketService {
   }
 
   async updateItemQuantity(userId: string, cartItemId: string, quantity: number) {
+    if (quantity < 1) {
+      return this.removeItem(userId, cartItemId);
+    }
+
     const item = await this.prisma.cartItem.findFirst({
       where: { id: cartItemId, cart: { userId } },
       select: { id: true, cartId: true },

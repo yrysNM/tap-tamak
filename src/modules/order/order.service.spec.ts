@@ -53,7 +53,7 @@ describe('OrderService', () => {
     const service = new OrderService(prisma as any, storageMock() as any);
 
     await expect(service.createFromCart('user-1', checkoutDto())).rejects.toThrow(
-      'Cook is not active at this time',
+      /is not active at this time/,
     );
   });
 
@@ -186,7 +186,7 @@ describe('OrderService', () => {
     ).rejects.toThrow(BadRequestException);
   });
 
-  it('markOrderPaidByAdmin from AWAITING_PAYMENT moves to COOKING', async () => {
+  it('markOrderPaidByAdmin from AWAITING_PAYMENT moves to AWAITING_COOK_ACCEPTANCE', async () => {
     const orders: Record<
       string,
       { id: string; userId: string; status: OrderStatus; paymentStatus: PaymentStatus }
@@ -203,6 +203,9 @@ describe('OrderService', () => {
       findUnique: jest.fn(({ where: { id } }: { where: { id: string } }) =>
         Promise.resolve(orders[id] ? { ...orders[id] } : null),
       ),
+      findUniqueOrThrow: jest.fn(({ where: { id } }: { where: { id: string } }) =>
+        Promise.resolve({ ...orders[id], items: [], user: {}, cook: {} }),
+      ),
       update: jest.fn(
         ({
           where: { id },
@@ -212,7 +215,7 @@ describe('OrderService', () => {
           data: { status?: OrderStatus; paymentStatus?: PaymentStatus; paymentProvider?: null };
         }) => {
           orders[id] = { ...orders[id], ...data };
-          return Promise.resolve({ ...orders[id], items: [], user: {}, cook: {} });
+          return Promise.resolve({ ...orders[id] });
         },
       ),
     };
@@ -224,20 +227,57 @@ describe('OrderService', () => {
 
     const service = new OrderService(prisma as any, storageMock() as any);
     await service.markOrderPaidByAdmin('o1');
-    expect(orders.o1.status).toBe(OrderStatus.COOKING);
+    expect(orders.o1.status).toBe(OrderStatus.AWAITING_COOK_ACCEPTANCE);
     expect(orders.o1.paymentStatus).toBe(PaymentStatus.COMPLETED);
   });
 
-  it('markOrderPaidByAdmin on COOKING with pending payment completes payment only', async () => {
-    const orders: Record<
-      string,
-      { id: string; status: OrderStatus; paymentStatus: PaymentStatus }
-    > = {
-      o1: { id: 'o1', status: OrderStatus.COOKING, paymentStatus: PaymentStatus.PENDING },
+  it('markOrderPaidByAdmin is idempotent when already completed', async () => {
+    const orders: Record<string, { id: string; status: OrderStatus; paymentStatus: PaymentStatus }> = {
+      o1: {
+        id: 'o1',
+        status: OrderStatus.AWAITING_COOK_ACCEPTANCE,
+        paymentStatus: PaymentStatus.COMPLETED,
+      },
     };
     const orderApi = {
       findUnique: jest.fn(({ where: { id } }: { where: { id: string } }) =>
         Promise.resolve(orders[id] ? { ...orders[id] } : null),
+      ),
+      findUniqueOrThrow: jest.fn(({ where: { id } }: { where: { id: string } }) =>
+        Promise.resolve({ ...orders[id], items: [], user: {}, cook: {} }),
+      ),
+      update: jest.fn(),
+    };
+    const prisma = { order: orderApi, $transaction: jest.fn() };
+    const service = new OrderService(prisma as any, storageMock() as any);
+    await service.markOrderPaidByAdmin('o1');
+    expect(orderApi.update).not.toHaveBeenCalled();
+  });
+
+  it('markOrderPaidByAdmin rejects non-payable order state', async () => {
+    const prisma = {
+      order: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'o1',
+          status: OrderStatus.COOKING,
+          paymentStatus: PaymentStatus.PENDING,
+        }),
+      },
+    };
+    const service = new OrderService(prisma as any, storageMock() as any);
+    await expect(service.markOrderPaidByAdmin('o1')).rejects.toThrow(BadRequestException);
+  });
+
+  it('setOrderPaymentStatusByAdmin updates payment and releases cook queue', async () => {
+    const orders: Record<string, { id: string; status: OrderStatus; paymentStatus: PaymentStatus }> = {
+      o1: { id: 'o1', status: OrderStatus.AWAITING_PAYMENT, paymentStatus: PaymentStatus.PENDING },
+    };
+    const orderApi = {
+      findUnique: jest.fn(({ where: { id } }: { where: { id: string } }) =>
+        Promise.resolve(orders[id] ? { ...orders[id] } : null),
+      ),
+      findUniqueOrThrow: jest.fn(({ where: { id } }: { where: { id: string } }) =>
+        Promise.resolve({ ...orders[id], items: [], user: {}, cook: {} }),
       ),
       update: jest.fn(
         ({
@@ -245,18 +285,53 @@ describe('OrderService', () => {
           data,
         }: {
           where: { id: string };
-          data: { status?: OrderStatus; paymentStatus?: PaymentStatus; paymentProvider?: null };
+          data: { status?: OrderStatus; paymentStatus?: PaymentStatus };
         }) => {
           orders[id] = { ...orders[id], ...data };
-          return Promise.resolve({ ...orders[id], items: [], user: {}, cook: {} });
+          return Promise.resolve({ ...orders[id] });
         },
       ),
     };
     const prisma = { order: orderApi, $transaction: jest.fn() };
     const service = new OrderService(prisma as any, storageMock() as any);
-    await service.markOrderPaidByAdmin('o1');
-    expect(orders.o1.status).toBe(OrderStatus.COOKING);
+    await service.setOrderPaymentStatusByAdmin('o1', { paymentStatus: PaymentStatus.COMPLETED });
     expect(orders.o1.paymentStatus).toBe(PaymentStatus.COMPLETED);
+    expect(orders.o1.status).toBe(OrderStatus.AWAITING_COOK_ACCEPTANCE);
+  });
+
+  it('setOrderStatusByAdmin rejects when payment is not completed', async () => {
+    const prisma = {
+      order: {
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          id: 'o1',
+          paymentStatus: PaymentStatus.PENDING,
+        }),
+        update: jest.fn(),
+      },
+    };
+    const service = new OrderService(prisma as any, storageMock() as any);
+    await expect(
+      service.setOrderStatusByAdmin('o1', OrderStatus.READY),
+    ).rejects.toThrow(BadRequestException);
+    expect(prisma.order.update).not.toHaveBeenCalled();
+  });
+
+  it('acceptCookOrder rejects when payment is not completed', async () => {
+    const prisma = {
+      order: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'o1',
+          userId: 'u1',
+          cookId: 'cook-1',
+          status: OrderStatus.AWAITING_COOK_ACCEPTANCE,
+          paymentStatus: PaymentStatus.PENDING,
+        }),
+      },
+      $transaction: jest.fn(),
+    };
+    const service = new OrderService(prisma as any, storageMock() as any);
+    await expect(service.acceptCookOrder('o1', 'cook-1', 30)).rejects.toThrow(BadRequestException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('getOrderById forbids cook for AWAITING_PAYMENT', async () => {
@@ -342,10 +417,10 @@ describe('OrderService', () => {
     expect(result.orderId).toBe('ord-json');
     expect(createData.basketId).toBe('cart-1');
     expect(createData.totalAmount).toBe(2400);
-    expect(createData.status).toBe(OrderStatus.AWAITING_COOK_ACCEPTANCE);
+    expect(createData.status).toBe(OrderStatus.AWAITING_PAYMENT);
   });
 
-  it('createFromCartMultipart creates AWAITING_COOK_ACCEPTANCE and saves photo', async () => {
+  it('createFromCartMultipart creates AWAITING_PAYMENT and saves photo', async () => {
     const storage = storageMock();
     const now = Date.now();
     let createData: {
@@ -405,7 +480,7 @@ describe('OrderService', () => {
     const photo = { buffer: Buffer.from('fake'), mimetype: 'image/jpeg', size: 4 } as any;
     const result = await service.createFromCartMultipart('user-1', form, photo);
     expect(result.orderId).toBe('ord-new');
-    expect(createData.status).toBe(OrderStatus.AWAITING_COOK_ACCEPTANCE);
+    expect(createData.status).toBe(OrderStatus.AWAITING_PAYMENT);
     expect(createData.basketId).toBe('cart-1');
     expect(createData.totalAmount).toBe(100);
     expect(createData.checkoutPhotoPath).toBe('orders/user-1/checkout-test.jpg');
@@ -423,6 +498,7 @@ describe('OrderService', () => {
           userId: 'u1',
           cookId: 'cook-1',
           status: OrderStatus.AWAITING_COOK_ACCEPTANCE,
+          paymentStatus: PaymentStatus.COMPLETED,
         }),
         findUniqueOrThrow: jest.fn().mockResolvedValue({
           id: 'o1',
@@ -626,7 +702,7 @@ describe('OrderService', () => {
       order: {
         findUniqueOrThrow: jest
           .fn()
-          .mockResolvedValueOnce({ id: 'o1' })
+          .mockResolvedValueOnce({ id: 'o1', paymentStatus: PaymentStatus.COMPLETED })
           .mockResolvedValueOnce(fullOrder),
         update: jest.fn().mockResolvedValue({}),
       },

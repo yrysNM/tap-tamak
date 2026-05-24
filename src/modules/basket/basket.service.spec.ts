@@ -75,7 +75,7 @@ describe('BasketService', () => {
     expect(result.cook?.businessName).toBe('Aisulu Kitchen');
   });
 
-  it('rejects adding dish from another cook', async () => {
+  it('allows adding dishes from another cook', async () => {
     const prisma = mockPrismaWithTransaction({
       dish: {
         findMany: jest.fn().mockResolvedValue([
@@ -83,23 +83,52 @@ describe('BasketService', () => {
         ]),
       },
       cart: {
-        upsert: jest.fn().mockResolvedValue({
+        upsert: jest.fn().mockResolvedValue({ id: 'cart-1' }),
+        findUnique: jest.fn().mockResolvedValue({
           id: 'cart-1',
-          cookId: 'cook-1',
+          cookId: null,
+          items: [
+            {
+              id: 'item-1',
+              dishId: 'dish-1',
+              quantity: 1,
+              dish: dishWithCook({ id: 'dish-1', cookId: 'cook-1' }),
+            },
+            {
+              id: 'item-2',
+              dishId: 'dish-2',
+              quantity: 1,
+              dish: dishWithCook({
+                id: 'dish-2',
+                cookId: 'cook-2',
+                name: 'Besh',
+                price: 2000,
+                cook: {
+                  id: 'cook-2',
+                  businessName: 'Second Kitchen',
+                  rating: 4,
+                  user: { firstName: 'B', lastName: 'C' },
+                },
+              }),
+            },
+          ],
         }),
+        update: jest.fn(),
       },
       cartItem: {
-        findFirst: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
         update: jest.fn(),
       },
     });
 
     const service = new BasketService(prisma as any);
+    const result = await service.addItems('user-1', [{ dishId: 'dish-2', quantity: 1 }]);
 
-    await expect(
-      service.addItems('user-1', [{ dishId: 'dish-2', quantity: 1 }]),
-    ).rejects.toThrow(BadRequestException);
+    expect(prisma.cartItem.create).toHaveBeenCalled();
+    expect(result.groups).toHaveLength(2);
+    expect(result.cookId).toBeNull();
+    expect(result.itemsCount).toBe(2);
   });
 
   it('adds multiple dishes from the same cook in one request', async () => {
@@ -252,6 +281,27 @@ describe('BasketService', () => {
     expect(result.items).toEqual([]);
     expect(result.itemsTotal).toBe(0);
     expect(result.cook).toBeNull();
+  });
+
+  it('updateItemQuantity with zero removes the line', async () => {
+    const prisma = {
+      cartItem: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'item-1', cartId: 'cart-1' }),
+        delete: jest.fn(),
+        count: jest.fn().mockResolvedValue(1),
+      },
+      cart: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'cart-1',
+          cookId: null,
+          items: [],
+        }),
+        delete: jest.fn(),
+      },
+    };
+    const service = new BasketService(prisma as any);
+    await service.updateItemQuantity('user-1', 'item-1', 0);
+    expect(prisma.cartItem.delete).toHaveBeenCalledWith({ where: { id: 'item-1' } });
   });
 
   it('updateItemQuantity updates line and returns totals', async () => {
