@@ -29,6 +29,7 @@ import { CurrentUser } from '../../core/auth/decorators/current-user.decorator';
 import { Public } from '../../core/auth/decorators/public.decorator';
 import { CookVerificationService } from './cook-verification.service';
 import { CookService } from './cook.service';
+import { StatsService } from '../stats/stats.service';
 import { ListCooksQueryDto } from './dto/list-cooks-query.dto';
 import { SubmitCookVerificationDto } from './dto/submit-cook-verification.dto';
 import { UpdateCookScheduleDto } from './dto/update-cook-schedule.dto';
@@ -41,6 +42,7 @@ export class CookController {
   constructor(
     private readonly cookVerificationService: CookVerificationService,
     private readonly cookService: CookService,
+    private readonly statsService: StatsService,
   ) {}
 
   @Public()
@@ -71,6 +73,18 @@ export class CookController {
     @Query() query: GetCookMenuInfoQueryDto,
   ) {
     return this.cookService.getMenuInformationForClient(cookId, query.date);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.COOK)
+  @Get('me/stats')
+  @ApiOperation({
+    summary: 'Cook dashboard statistics',
+    description:
+      'Today and lifetime order counts, paid revenue, dish/menu counts, rating, and active schedule status (UTC day).',
+  })
+  async getMyStats(@CurrentUser() user: User) {
+    return this.statsService.getCookStats(user.id);
   }
 
   @ApiBearerAuth()
