@@ -70,14 +70,14 @@ export class AuthService {
       where: { phone: normalizedPhone },
     });
     if (!user || !user.isActive) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Invalid credentials not found user');
     }
     const isPasswordValid = await bcrypt.compare(
       dto.password,
       user.passwordHash,
     );
     if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Invalid credentials not valid password');
     }
     return this.issueTokens(user);
   }
