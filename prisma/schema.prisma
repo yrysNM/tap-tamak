@@ -85,6 +85,7 @@ model User {
   role         Role     @default(USER)
   refreshToken String?
   isActive     Boolean  @default(true)
+  avatarUrl    String?
 
   // Relations
   cook       Cook?

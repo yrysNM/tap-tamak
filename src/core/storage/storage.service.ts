@@ -8,6 +8,7 @@ const GALLERY_SEGMENT = 'gallery';
 const DISH_SEGMENT = 'dishes';
 const ORDER_SEGMENT = 'orders';
 const COOK_SEGMENT = 'cooks';
+const USER_SEGMENT = 'users';
 
 @Injectable()
 export class StorageService {
@@ -63,6 +64,19 @@ export class StorageService {
     const safeExt = ext.startsWith('.') ? ext : `.${ext}`;
     const name = `profile-${uuid()}${safeExt}`;
     const relative = join(COOK_SEGMENT, cookId, name).replace(/\\/g, '/');
+    const full = join(this.uploadRoot, relative);
+    await mkdir(dirname(full), { recursive: true });
+    await writeFile(full, buffer);
+    return relative;
+  }
+
+  /**
+   * Persists a user avatar under uploads/users/{userId}/ and returns the stored relative path.
+   */
+  async saveUserAvatar(userId: string, buffer: Buffer, ext: string): Promise<string> {
+    const safeExt = ext.startsWith('.') ? ext : `.${ext}`;
+    const name = `avatar-${uuid()}${safeExt}`;
+    const relative = join(USER_SEGMENT, userId, name).replace(/\\/g, '/');
     const full = join(this.uploadRoot, relative);
     await mkdir(dirname(full), { recursive: true });
     await writeFile(full, buffer);

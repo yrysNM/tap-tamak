@@ -1,6 +1,7 @@
 import {
   Controller,
   Post,
+  Patch,
   Body,
   HttpCode,
   HttpStatus,
@@ -14,6 +15,7 @@ import { Public } from './decorators/public.decorator';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/tokens.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { User } from '@prisma/client';
 
 @ApiTags('auth')
@@ -54,5 +56,16 @@ export class AuthController {
   @ApiOperation({ summary: 'Invalidate refresh token' })
   async logout(@CurrentUser() user: User) {
     await this.authService.logout(user.id);
+  }
+
+  @Patch('change-password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update password for the authenticated user' })
+  async changePassword(
+    @CurrentUser() user: User,
+    @Body() dto: ChangePasswordDto,
+  ) {
+    await this.authService.changePassword(user.id, dto);
   }
 }
