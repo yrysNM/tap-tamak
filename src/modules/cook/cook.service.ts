@@ -106,7 +106,11 @@ export class CookService {
     }
     const updated = await this.prisma.cook.update({
       where: { id: cook.id },
-      data: { workStartAt: start, workEndAt: end },
+      data: {
+        workStartAt: start,
+        workEndAt: end,
+        isAvailable: true,
+      },
       select: {
         workStartAt: true,
         workEndAt: true,
@@ -199,13 +203,11 @@ export class CookService {
     if (params.isAvailable !== undefined) {
       if (params.isAvailable) {
         where.AND = [
-          { isAvailable: true },
           { workStartAt: { not: null, lte: now } },
           { workEndAt: { not: null, gt: now } },
         ];
       } else {
         where.OR = [
-          { isAvailable: false },
           { workStartAt: null },
           { workEndAt: null },
           { workStartAt: { gt: now } },

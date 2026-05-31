@@ -27,6 +27,6 @@ export function isCookActiveNow(cook: CookAvailabilityInput, now = new Date()): 
   if (!workStartAt || !workEndAt) {
     return false;
   }
-  
-  return now >= workStartAt && now <= workEndAt;
+
+  return now >= workStartAt && now < workEndAt;
 }
