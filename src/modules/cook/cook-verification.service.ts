@@ -33,6 +33,17 @@ function extForImageMime(mime: string): string {
   }
 }
 
+function isAllowedCertificateMime(mime: string): boolean {
+  return IMAGE_MIMES.has(mime) || mime === PDF_MIME;
+}
+
+function extForCertificateMime(mime: string): string {
+  if (mime === PDF_MIME) {
+    return '.pdf';
+  }
+  return extForImageMime(mime);
+}
+
 /** Treat legacy empty / whitespace-only DB values as absent. */
 function healthCertPathOrNull(
   stored: string | null | undefined,
@@ -92,6 +103,8 @@ type CookForCrm = Prisma.CookGetPayload<{
     id: true;
     businessName: true;
     verificationStatus: true;
+    latitude: true;
+    longitude: true;
     user: {
       select: {
         id: true;
@@ -134,6 +147,8 @@ export class CookVerificationService {
     id: true,
     businessName: true,
     verificationStatus: true,
+    latitude: true,
+    longitude: true,
     user: {
       select: {
         id: true,
@@ -246,7 +261,7 @@ export class CookVerificationService {
       );
     }
     if (!cert) {
-      throw new BadRequestException('certificate (PDF) is required');
+      throw new BadRequestException('certificate is required');
     }
 
     for (const f of kitchen) {
@@ -269,13 +284,17 @@ export class CookVerificationService {
         throw new BadRequestException('Each PDF must be at most 15MB');
       }
     }
-    if (cert.mimetype !== PDF_MIME) {
+    if (!isAllowedCertificateMime(cert.mimetype)) {
       throw new BadRequestException(
-        `Expected PDF for certificate (got ${cert.mimetype})`,
+        `Certificate must be JPEG, PNG, WebP, or PDF (got ${cert.mimetype})`,
       );
     }
-    if (cert.size > MAX_PDF_BYTES) {
-      throw new BadRequestException('Each PDF must be at most 15MB');
+    if (cert.mimetype === PDF_MIME) {
+      if (cert.size > MAX_PDF_BYTES) {
+        throw new BadRequestException('Certificate PDF must be at most 15MB');
+      }
+    } else if (cert.size > MAX_PHOTO_BYTES) {
+      throw new BadRequestException('Certificate image must be at most 8MB');
     }
 
     const existing = await this.prisma.cookVerification.findUnique({
@@ -322,7 +341,7 @@ export class CookVerificationService {
       'certificate',
       undefined,
       cert.buffer,
-      '.pdf',
+      extForCertificateMime(cert.mimetype),
     );
 
     await this.storage.removeStoredFiles(oldPaths);
@@ -418,6 +437,8 @@ export class CookVerificationService {
       cookId: cook.id,
       businessName: cook.businessName,
       verificationStatus: cook.verificationStatus,
+      latitude: cook.latitude,
+      longitude: cook.longitude,
       user: cook.user,
       documents: v ? this.mapVerificationDocumentsToPublic(v) : null,
     };

@@ -20,6 +20,12 @@ import { CheckoutMultipartFormDto } from './dto/checkout-multipart-form.dto';
 import { AdminPatchOrderDto } from './dto/admin-patch-order.dto';
 import { AdminSetPaymentStatusDto } from './dto/admin-set-payment-status.dto';
 import type { PrepareFromCartResponseDto } from './dto/prepare-from-cart-response.dto';
+import {
+  attachCommissionFields,
+  computeOrderCommission,
+  DELIVERY_FEE,
+  type OrderCommissionBreakdown,
+} from '../../common/order-commission.util';
 
 export interface CreateOrderResult {
   orderId: string;
@@ -147,11 +153,10 @@ export class OrderService {
     _discountAmountInput: number,
   ): CheckoutPricing {
     const itemsTotal = items.reduce((sum, item) => sum + item.quantity * item.dish.price, 0);
-    const platformFeePercent = Number(process.env.PLATFORM_FEE_PERCENT ?? 0);
-    const platformFee = Math.floor((itemsTotal * platformFeePercent) / 100);
-    const deliveryFee = 0;
+    const { platformFeePercent, platformFee } = computeOrderCommission(itemsTotal);
+    const deliveryFee = DELIVERY_FEE;
     const discountAmount = 0;
-    const totalAmount = itemsTotal;
+    const totalAmount = itemsTotal + deliveryFee;
     return {
       itemsTotal,
       platformFeePercent,
@@ -638,7 +643,7 @@ export class OrderService {
     ]);
 
     return {
-      items,
+      items: items.map(attachCommissionFields),
       meta: {
         total,
         page,
@@ -665,7 +670,7 @@ export class OrderService {
     ]);
 
     return {
-      items,
+      items: items.map(attachCommissionFields),
       meta: {
         total,
         page,
@@ -703,7 +708,7 @@ export class OrderService {
     ]);
 
     return {
-      items,
+      items: items.map(attachCommissionFields),
       meta: {
         total,
         page,
@@ -736,7 +741,7 @@ export class OrderService {
     ]);
 
     return {
-      items,
+      items: items.map(attachCommissionFields),
       meta: {
         total,
         page,
@@ -768,14 +773,15 @@ export class OrderService {
       }
     }
 
-    return order;
+    return attachCommissionFields(order);
   }
 
-  async getOrderByIdForAdmin(orderId: string): Promise<OrderWithAdminInclude> {
-    return this.prisma.order.findUniqueOrThrow({
+  async getOrderByIdForAdmin(orderId: string): Promise<OrderWithAdminInclude & OrderCommissionBreakdown> {
+    const order = await this.prisma.order.findUniqueOrThrow({
       where: { id: orderId },
       include: adminOrderInclude,
     });
+    return attachCommissionFields(order);
   }
 
   async patchOrderByAdmin(orderId: string, dto: AdminPatchOrderDto): Promise<OrderWithAdminInclude> {

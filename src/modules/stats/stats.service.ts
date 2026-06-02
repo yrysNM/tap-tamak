@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../../core/database/prisma.service';
 import { isCookActiveNow } from '../cook/cook-availability.util';
 import { utcTodayDateOnly } from '../menus/menu-date.util';
+import { computeCommissionFromAggregateOrders, computeOrderCommission, orderFoodSubtotal } from '../../common/order-commission.util';
 
 const COOK_PENDING_STATUSES: OrderStatus[] = [
   OrderStatus.AWAITING_COOK_ACCEPTANCE,
@@ -65,11 +66,11 @@ export class StatsService {
       }),
       this.prisma.order.aggregate({
         where: { ...paidWhere, createdAt: { gte: start, lt: end } },
-        _sum: { totalAmount: true },
+        _sum: { totalAmount: true, deliveryFee: true },
       }),
       this.prisma.order.aggregate({
         where: paidWhere,
-        _sum: { totalAmount: true },
+        _sum: { totalAmount: true, deliveryFee: true },
       }),
       this.prisma.order.count({
         where: {
@@ -86,6 +87,13 @@ export class StatsService {
       }),
     ]);
 
+    const revenueToday = revenueTodayAgg._sum.totalAmount ?? 0;
+    const revenueTotal = revenueTotalAgg._sum.totalAmount ?? 0;
+    const deliveryToday = revenueTodayAgg._sum.deliveryFee ?? 0;
+    const deliveryTotal = revenueTotalAgg._sum.deliveryFee ?? 0;
+    const todayCommission = computeCommissionFromAggregateOrders(revenueToday, deliveryToday);
+    const totalCommission = computeCommissionFromAggregateOrders(revenueTotal, deliveryTotal);
+
     return {
       rating: cook.rating,
       totalReviews: cook.totalReviews,
@@ -93,8 +101,12 @@ export class StatsService {
       menuDishesToday: menuToday?._count.dishes ?? 0,
       ordersToday,
       pendingOrders,
-      revenueToday: revenueTodayAgg._sum.totalAmount ?? 0,
-      revenueTotal: revenueTotalAgg._sum.totalAmount ?? 0,
+      revenueToday,
+      revenueTotal,
+      commissionToday: todayCommission.commission,
+      commissionTotal: totalCommission.commission,
+      netPayoutToday: todayCommission.cookPayout,
+      netPayoutTotal: totalCommission.cookPayout,
       completedOrdersToday,
       isActiveNow: isCookActiveNow(cook),
     };
@@ -133,11 +145,11 @@ export class StatsService {
       }),
       this.prisma.order.aggregate({
         where: paidWhere,
-        _sum: { totalAmount: true },
+        _sum: { totalAmount: true, deliveryFee: true },
       }),
       this.prisma.order.aggregate({
         where: { ...paidWhere, createdAt: { gte: start, lt: end } },
-        _sum: { totalAmount: true },
+        _sum: { totalAmount: true, deliveryFee: true },
       }),
       this.prisma.order.findMany({
         take: 5,
@@ -147,12 +159,20 @@ export class StatsService {
           orderNumber: true,
           status: true,
           totalAmount: true,
+          deliveryFee: true,
           createdAt: true,
           cook: { select: { businessName: true } },
           user: { select: { firstName: true, lastName: true } },
         },
       }),
     ]);
+
+    const revenueTotal = revenueTotalAgg._sum.totalAmount ?? 0;
+    const revenueToday = revenueTodayAgg._sum.totalAmount ?? 0;
+    const deliveryTotal = revenueTotalAgg._sum.deliveryFee ?? 0;
+    const deliveryToday = revenueTodayAgg._sum.deliveryFee ?? 0;
+    const totalCommission = computeCommissionFromAggregateOrders(revenueTotal, deliveryTotal);
+    const todayCommission = computeCommissionFromAggregateOrders(revenueToday, deliveryToday);
 
     return {
       totalUsers,
@@ -162,13 +182,18 @@ export class StatsService {
       totalOrders,
       ordersToday,
       awaitingPaymentOrders,
-      revenueTotal: revenueTotalAgg._sum.totalAmount ?? 0,
-      revenueToday: revenueTodayAgg._sum.totalAmount ?? 0,
+      revenueTotal,
+      revenueToday,
+      commissionTotal: totalCommission.commission,
+      commissionToday: todayCommission.commission,
+      netPayoutTotal: totalCommission.cookPayout,
+      netPayoutToday: todayCommission.cookPayout,
       recentOrders: recentOrders.map((o) => ({
         id: o.id,
         orderNumber: o.orderNumber,
         status: o.status,
         totalAmount: o.totalAmount,
+        ...computeOrderCommission(orderFoodSubtotal(o)),
         createdAt: o.createdAt.toISOString(),
         cookName: o.cook.businessName,
         customerName:

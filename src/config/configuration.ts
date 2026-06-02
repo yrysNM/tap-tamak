@@ -42,7 +42,7 @@ export default () => ({
       secretKey: process.env.FREEDOM_SECRET_KEY,
     },
     platformFeePercent: parseInt(
-      process.env.PLATFORM_FEE_PERCENT ?? '8',
+      process.env.PLATFORM_FEE_PERCENT ?? '12',
       10,
     ),
   },

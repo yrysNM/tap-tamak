@@ -43,6 +43,10 @@ describe('StatsService', () => {
     expect(result.pendingOrders).toBe(2);
     expect(result.revenueToday).toBe(15000);
     expect(result.revenueTotal).toBe(90000);
+    expect(result.commissionToday).toBe(1800);
+    expect(result.commissionTotal).toBe(10800);
+    expect(result.netPayoutToday).toBe(13200);
+    expect(result.netPayoutTotal).toBe(79200);
     expect(result.countDishes).toBe(8);
     expect(result.menuDishesToday).toBe(4);
     expect(result.isActiveNow).toBe(true);
@@ -102,7 +106,13 @@ describe('StatsService', () => {
     expect(result.awaitingPaymentOrders).toBe(4);
     expect(result.revenueTotal).toBe(1_000_000);
     expect(result.revenueToday).toBe(25_000);
+    expect(result.commissionTotal).toBe(120_000);
+    expect(result.commissionToday).toBe(3000);
+    expect(result.netPayoutTotal).toBe(880_000);
+    expect(result.netPayoutToday).toBe(22_000);
     expect(result.recentOrders).toHaveLength(1);
+    expect(result.recentOrders[0].commission).toBe(600);
+    expect(result.recentOrders[0].cookPayout).toBe(4400);
     expect(result.recentOrders[0].cookName).toBe('Kitchen A');
     expect(prisma.user.count).toHaveBeenCalledWith({ where: { role: Role.USER } });
     expect(prisma.order.aggregate).toHaveBeenCalledWith(

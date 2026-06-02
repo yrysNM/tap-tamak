@@ -174,7 +174,7 @@ export class CookController {
   @ApiOperation({
     summary: 'Upload verification documents (kitchen photos + PDFs)',
     description:
-      'Multipart: `kitchenPhotos` (1–6 images: JPEG, PNG, WebP), `certificate` (PDF), optional `healthCert` (PDF). Sets verification status to UNDER_REVIEW.',
+      'Multipart: `kitchenPhotos` (1–6 images: JPEG, PNG, WebP), `certificate` (JPEG, PNG, WebP, or PDF), optional `healthCert` (PDF). Sets verification status to UNDER_REVIEW.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -209,7 +209,7 @@ export class CookController {
         certificate: {
           type: 'string',
           format: 'binary',
-          description: 'Business / qualification certificate (PDF)',
+          description: 'Business / qualification certificate (JPEG, PNG, WebP, or PDF)',
         },
       },
     },

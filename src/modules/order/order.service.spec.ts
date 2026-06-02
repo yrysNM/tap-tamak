@@ -94,7 +94,10 @@ describe('OrderService', () => {
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(result.itemsTotal).toBe(3000);
-    expect(result.totalAmount).toBe(3000);
+    expect(result.totalAmount).toBe(4000);
+    expect(result.deliveryFee).toBe(1000);
+    expect(result.platformFeePercent).toBe(12);
+    expect(result.platformFee).toBe(360);
     expect(result.discountAmount).toBe(0);
     expect(result.cook.businessName).toBe('Aliya');
     expect(result.basketId).toBe('cart-1');
@@ -104,7 +107,7 @@ describe('OrderService', () => {
     expect(result.items[0].lineSubtotal).toBe(3000);
   });
 
-  it('prepareFromCart ignores delivery fee and discount in final total', async () => {
+  it('prepareFromCart applies flat delivery fee and ignores discount in final total', async () => {
     const now = Date.now();
     const prisma = {
       cart: {
@@ -137,9 +140,9 @@ describe('OrderService', () => {
     const service = new OrderService(prisma as any, storageMock() as any);
     const result = await service.prepareFromCart('user-1', checkoutDto({ discountAmount: 800 }));
     expect(result.itemsTotal).toBe(3000);
-    expect(result.deliveryFee).toBe(0);
+    expect(result.deliveryFee).toBe(1000);
     expect(result.discountAmount).toBe(0);
-    expect(result.totalAmount).toBe(3000);
+    expect(result.totalAmount).toBe(4000);
   });
 
   it('prepareFromCart rejects empty cart', async () => {
@@ -355,6 +358,7 @@ describe('OrderService', () => {
       userId: 'u1',
       cookId: 'cook-1',
       status: OrderStatus.AWAITING_COOK_ACCEPTANCE,
+      totalAmount: 5000,
       items: [],
       user: {},
       cook: {},
@@ -365,10 +369,17 @@ describe('OrderService', () => {
       },
     };
     const service = new OrderService(prisma as any, storageMock() as any);
-    await expect(service.getOrderById('o1', 'u1', Role.COOK, 'cook-1')).resolves.toEqual(order);
+    await expect(service.getOrderById('o1', 'u1', Role.COOK, 'cook-1')).resolves.toEqual({
+      ...order,
+      commissionPercent: 12,
+      commission: 600,
+      platformFee: 600,
+      platformFeePercent: 12,
+      cookPayout: 4400,
+    });
   });
 
-  it('createFromCart persists order basketId with dish-only total', async () => {
+  it('createFromCart persists order basketId with items total plus delivery fee', async () => {
     const now = Date.now();
     let createData: { basketId?: string; totalAmount?: number; status?: OrderStatus } = {};
     const mockTx = {
@@ -416,7 +427,7 @@ describe('OrderService', () => {
     const result = await service.createFromCart('user-1', checkoutDto({ discountAmount: 300 }));
     expect(result.orderId).toBe('ord-json');
     expect(createData.basketId).toBe('cart-1');
-    expect(createData.totalAmount).toBe(2400);
+    expect(createData.totalAmount).toBe(3400);
     expect(createData.status).toBe(OrderStatus.AWAITING_PAYMENT);
   });
 
@@ -482,7 +493,7 @@ describe('OrderService', () => {
     expect(result.orderId).toBe('ord-new');
     expect(createData.status).toBe(OrderStatus.AWAITING_PAYMENT);
     expect(createData.basketId).toBe('cart-1');
-    expect(createData.totalAmount).toBe(100);
+    expect(createData.totalAmount).toBe(1100);
     expect(createData.checkoutPhotoPath).toBe('orders/user-1/checkout-test.jpg');
     expect(createData.courierComment).toBeNull();
     expect(storage.saveOrderCheckoutPhoto).toHaveBeenCalled();
@@ -711,7 +722,7 @@ describe('OrderService', () => {
     const out = await service.setOrderStatusByAdmin('o1', OrderStatus.COOKING);
     expect(prisma.order.update).toHaveBeenCalledWith({
       where: { id: 'o1' },
-      data: { status: OrderStatus.COOKING },
+      data: expect.objectContaining({ status: OrderStatus.COOKING }),
     });
     expect(out.status).toBe(OrderStatus.COOKING);
   });
