@@ -2,10 +2,11 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../core/database/prisma.module';
 import { UsersService } from './users.service';
 import { CrmUsersController } from './crm-users.controller';
+import { UsersController } from './users.controller';
 
 @Module({
   imports: [PrismaModule],
-  controllers: [CrmUsersController],
+  controllers: [CrmUsersController, UsersController],
   providers: [UsersService],
   exports: [UsersService],
 })

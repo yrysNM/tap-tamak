@@ -1,16 +1,25 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
-import { Prisma, Role, User } from '@prisma/client';
+import { randomUUID } from 'crypto';
+import { OrderStatus, Prisma, Role, User } from '@prisma/client';
 import { PrismaService } from '../../core/database/prisma.service';
 import { StorageService } from '../../core/storage/storage.service';
+import { DeleteAccountDto } from './dto/delete-account.dto';
 import { ListCrmUsersQueryDto } from './dto/list-crm-users-query.dto';
 import { PatchCrmUserDto } from './dto/patch-crm-user.dto';
 
 const SALT_ROUNDS = 10;
+
+const TERMINAL_ORDER_STATUSES: OrderStatus[] = [
+  OrderStatus.DELIVERED,
+  OrderStatus.CANCELLED,
+];
 
 export type CrmUserItem = {
   id: string;
@@ -204,6 +213,191 @@ export class UsersService {
     }
 
     return { imageUrl: this.storage.getPublicUrl(storedPath) };
+  }
+
+  async deleteAccount(userId: string, dto: DeleteAccountDto): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        cook: {
+          include: { verification: true },
+        },
+      },
+    });
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+    if (user.role === Role.ADMIN) {
+      throw new ForbiddenException('Admin accounts cannot be deleted via the app');
+    }
+
+    const isCurrentValid = await bcrypt.compare(
+      dto.currentPassword,
+      user.passwordHash,
+    );
+    if (!isCurrentValid) {
+      throw new BadRequestException('Current password is incorrect');
+    }
+
+    await this.assertNoActiveOrders(userId, user.cook?.id ?? null);
+
+    const filePaths = await this.collectDeletionFilePaths(userId, user);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.cartItem.deleteMany({ where: { cart: { userId } } });
+      await tx.cart.deleteMany({ where: { userId } });
+      await tx.address.deleteMany({ where: { userId } });
+      await tx.deviceToken.deleteMany({ where: { userId } });
+      await tx.notification.deleteMany({ where: { userId } });
+      await tx.favoriteDish.deleteMany({ where: { userId } });
+      await tx.favoriteCook.deleteMany({ where: { userId } });
+
+      await tx.review.updateMany({
+        where: { userId },
+        data: { comment: null },
+      });
+
+      if (user.cook) {
+        const cookId = user.cook.id;
+
+        await tx.menu.deleteMany({ where: { cookId } });
+
+        const dishes = await tx.dish.findMany({
+          where: { cookId },
+          include: { _count: { select: { orderItems: true } } },
+        });
+
+        for (const dish of dishes) {
+          if (dish._count.orderItems === 0) {
+            await tx.dish.delete({ where: { id: dish.id } });
+          } else {
+            await tx.dish.update({
+              where: { id: dish.id },
+              data: { isAvailable: false, imageUrl: null },
+            });
+          }
+        }
+
+        await tx.cookVerification.deleteMany({ where: { cookId } });
+
+        await tx.cook.update({
+          where: { id: cookId },
+          data: {
+            businessName: 'Deleted Cook',
+            bio: null,
+            profileImageUrl: null,
+            latitude: null,
+            longitude: null,
+            isAvailable: false,
+            workStartAt: null,
+            workEndAt: null,
+          },
+        });
+      }
+
+      const passwordHash = await bcrypt.hash(randomUUID(), SALT_ROUNDS);
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          phone: `deleted-${userId}`,
+          email: null,
+          firstName: 'Deleted',
+          lastName: null,
+          passwordHash,
+          refreshToken: null,
+          isActive: false,
+          avatarUrl: null,
+        },
+      });
+    });
+
+    await this.storage.removeStoredFiles(filePaths);
+  }
+
+  private async assertNoActiveOrders(
+    userId: string,
+    cookId: string | null,
+  ): Promise<void> {
+    const orConditions: Prisma.OrderWhereInput[] = [{ userId }];
+    if (cookId) {
+      orConditions.push({ cookId });
+    }
+
+    const blocking = await this.prisma.order.findFirst({
+      where: {
+        status: { notIn: TERMINAL_ORDER_STATUSES },
+        OR: orConditions,
+      },
+      select: { id: true },
+    });
+
+    if (blocking) {
+      throw new BadRequestException(
+        'Complete or cancel active orders before deleting your account',
+      );
+    }
+  }
+
+  private async collectDeletionFilePaths(
+    userId: string,
+    user: User & {
+      cook: {
+        id: string;
+        profileImageUrl: string | null;
+        verification: {
+          kitchenPhotoUrls: string[];
+          healthCertUrl: string | null;
+          certificateUrl: string;
+        } | null;
+      } | null;
+    },
+  ): Promise<string[]> {
+    const paths = new Set<string>();
+
+    if (user.avatarUrl) {
+      paths.add(user.avatarUrl);
+    }
+
+    if (user.cook) {
+      if (user.cook.profileImageUrl) {
+        paths.add(user.cook.profileImageUrl);
+      }
+
+      const verification = user.cook.verification;
+      if (verification) {
+        for (const url of verification.kitchenPhotoUrls) {
+          if (url) paths.add(url);
+        }
+        if (verification.healthCertUrl?.trim()) {
+          paths.add(verification.healthCertUrl);
+        }
+        if (verification.certificateUrl) {
+          paths.add(verification.certificateUrl);
+        }
+      }
+
+      const dishes = await this.prisma.dish.findMany({
+        where: { cookId: user.cook.id },
+        select: { imageUrl: true },
+      });
+      for (const dish of dishes) {
+        if (dish.imageUrl) {
+          paths.add(dish.imageUrl);
+        }
+      }
+    }
+
+    const orders = await this.prisma.order.findMany({
+      where: { userId },
+      select: { checkoutPhotoPath: true },
+    });
+    for (const order of orders) {
+      if (order.checkoutPhotoPath) {
+        paths.add(order.checkoutPhotoPath);
+      }
+    }
+
+    return [...paths];
   }
 
   private toCrmUserItem(
