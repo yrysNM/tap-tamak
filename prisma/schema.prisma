@@ -69,6 +69,33 @@ enum CookLeadStatus {
   ARCHIVED
 }
 
+enum ReportTargetType {
+  COOK
+  DISH
+  USER
+}
+
+enum ReportStatus {
+  PENDING
+  RESOLVED
+  DISMISSED
+}
+
+enum ReportReason {
+  SPAM
+  HARASSMENT
+  HATE
+  OFFENSIVE_CONTENT
+  FRAUD
+  OTHER
+}
+
+enum ModerationAction {
+  DEACTIVATE_USER
+  HIDE_DISH
+  REJECT_COOK
+}
+
 enum DishPreparationType {
   FAST
   LONG
@@ -86,6 +113,9 @@ model User {
   refreshToken String?
   isActive     Boolean  @default(true)
   avatarUrl    String?
+  acceptedTermsVersion   String?
+  acceptedPrivacyVersion String?
+  legalAcceptedAt        DateTime?
 
   // Relations
   cook       Cook?
@@ -97,6 +127,11 @@ model User {
   favoritesDishes FavoriteDish[]
   favoritesCooks  FavoriteCook[]
   notifications   Notification[]
+  reportsFiled    ContentReport[] @relation("ReportsFiled")
+  reportsTargeted ContentReport[] @relation("ReportsTargeted")
+  reportsResolved ContentReport[] @relation("ReportsResolved")
+  blocksInitiated UserBlock[]     @relation("BlocksInitiated")
+  blocksReceived  UserBlock[]     @relation("BlocksReceived")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -400,4 +435,44 @@ model CookLead {
   @@index([email])
   @@index([createdAt])
   @@index([status])
+}
+
+model ContentReport {
+  id              String           @id @default(uuid())
+  reporterId      String
+  targetType      ReportTargetType
+  targetId        String
+  targetUserId    String
+  reason          ReportReason
+  details         String?
+  status          ReportStatus     @default(PENDING)
+  resolutionNote  String?
+  resolutionAction ModerationAction?
+  resolvedAt      DateTime?
+  resolvedById    String?
+
+  reporter   User  @relation("ReportsFiled", fields: [reporterId], references: [id])
+  targetUser User  @relation("ReportsTargeted", fields: [targetUserId], references: [id])
+  resolvedBy User? @relation("ReportsResolved", fields: [resolvedById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([targetType, targetId])
+  @@index([reporterId])
+}
+
+model UserBlock {
+  id            String @id @default(uuid())
+  blockerId     String
+  blockedUserId String
+
+  blocker     User @relation("BlocksInitiated", fields: [blockerId], references: [id], onDelete: Cascade)
+  blockedUser User @relation("BlocksReceived", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([blockerId, blockedUserId])
+  @@index([blockerId])
 }

@@ -13,6 +13,7 @@ import { MenusModule } from './modules/menus/menus.module';
 import { BasketModule } from './modules/basket/basket.module';
 import { StatsModule } from './modules/stats/stats.module';
 import { UsersModule } from './modules/users/users.module';
+import { ModerationModule } from './modules/moderation/moderation.module';
 import { StorageModule } from './core/storage/storage.module';
 import { JwtAuthGuard } from './core/auth/guards/jwt-auth.guard';
 import { RolesGuard } from './core/auth/guards/roles.guard';
@@ -39,6 +40,7 @@ import { AppService } from './app.service';
     BasketModule,
     StatsModule,
     UsersModule,
+    ModerationModule,
   ],
   controllers: [AppController],
   providers: [

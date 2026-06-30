@@ -46,4 +46,8 @@ export default () => ({
       10,
     ),
   },
+  legal: {
+    termsVersion: process.env.LEGAL_TERMS_VERSION ?? '2026-06-28',
+    privacyVersion: process.env.LEGAL_PRIVACY_VERSION ?? '2026-06-28',
+  },
 });

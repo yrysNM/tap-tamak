@@ -46,12 +46,23 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
     const firstName = dto.firstName.trim();
+    const termsVersion = this.configService.get<string>('legal.termsVersion');
+    const privacyVersion = this.configService.get<string>('legal.privacyVersion');
+    if (dto.acceptedTermsVersion !== termsVersion) {
+      throw new BadRequestException('Terms of use version mismatch');
+    }
+    if (dto.acceptedPrivacyVersion !== privacyVersion) {
+      throw new BadRequestException('Privacy policy version mismatch');
+    }
     const user = await this.prisma.user.create({
       data: {
         phone: normalizedPhone,
         passwordHash,
         firstName,
         role: dto.role,
+        acceptedTermsVersion: dto.acceptedTermsVersion,
+        acceptedPrivacyVersion: dto.acceptedPrivacyVersion,
+        legalAcceptedAt: new Date(),
         ...(dto.role === Role.COOK
           ? {
               cook: {

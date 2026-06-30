@@ -27,6 +27,7 @@ import { RolesGuard } from '../../core/auth/guards/roles.guard';
 import { Roles } from '../../core/auth/decorators/roles.decorator';
 import { CurrentUser } from '../../core/auth/decorators/current-user.decorator';
 import { Public } from '../../core/auth/decorators/public.decorator';
+import { OptionalAuth } from '../../core/auth/decorators/optional-auth.decorator';
 import { CookVerificationService } from './cook-verification.service';
 import { CookService } from './cook.service';
 import { StatsService } from '../stats/stats.service';
@@ -46,33 +47,44 @@ export class CookController {
   ) {}
 
   @Public()
+  @OptionalAuth()
   @Get()
   @ApiOperation({
     summary: 'List cooks (storefront)',
     description:
-      'Paginated verified cooks for the client app. Each item includes `countDishes` (total catalog dishes). Optional `isAvailable`, `q` (business name contains).',
+      'Paginated verified cooks for the client app. Each item includes `countDishes` (total catalog dishes). Optional `isAvailable`, `q` (business name contains). Authenticated users do not see cooks they blocked.',
   })
-  async listForClient(@Query() query: ListCooksQueryDto) {
+  async listForClient(
+    @Query() query: ListCooksQueryDto,
+    @CurrentUser() user?: User | null,
+  ) {
     return this.cookService.listForClient({
       page: query.page ?? 1,
       limit: query.limit ?? 20,
       isAvailable: query.isAvailable,
       q: query.q,
+      viewerUserId: user?.id ?? null,
     });
   }
 
   @Public()
+  @OptionalAuth()
   @Get(':cookId/menus-information')
   @ApiOperation({
     summary: 'Get cook profile with menu information',
     description:
-      'Returns verified cook information and dishes from a menu for the requested UTC date (or today if omitted).',
+      'Returns verified cook information and dishes from a menu for the requested UTC date (or today if omitted). Hidden when the authenticated user blocked this cook.',
   })
   async getMenuInformationForClient(
     @Param('cookId') cookId: string,
     @Query() query: GetCookMenuInfoQueryDto,
+    @CurrentUser() user?: User | null,
   ) {
-    return this.cookService.getMenuInformationForClient(cookId, query.date);
+    return this.cookService.getMenuInformationForClient(
+      cookId,
+      query.date,
+      user?.id ?? null,
+    );
   }
 
   @ApiBearerAuth()

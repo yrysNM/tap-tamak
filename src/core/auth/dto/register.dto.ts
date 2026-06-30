@@ -35,4 +35,14 @@ export class RegisterDto {
   @ApiProperty({ enum: PUBLIC_ROLES, default: Role.USER })
   @IsEnum(PUBLIC_ROLES, { message: 'Role must be USER or COOK' })
   role: PublicRole = Role.USER;
+
+  @ApiProperty({ example: '2026-06-28' })
+  @IsString()
+  @IsNotEmpty()
+  acceptedTermsVersion: string;
+
+  @ApiProperty({ example: '2026-06-28' })
+  @IsString()
+  @IsNotEmpty()
+  acceptedPrivacyVersion: string;
 }

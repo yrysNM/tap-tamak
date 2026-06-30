@@ -195,11 +195,18 @@ export class CookService {
     limit: number;
     isAvailable?: boolean;
     q?: string;
+    viewerUserId?: string | null;
   }): Promise<{ items: PublicCookSummary[]; meta: { total: number; page: number; limit: number } }> {
     const now = new Date();
     const where: Prisma.CookWhereInput = {
       verificationStatus: VerificationStatus.APPROVED,
     };
+    const blockedUserIds = params.viewerUserId
+      ? await this.getBlockedUserIds(params.viewerUserId)
+      : [];
+    if (blockedUserIds.length > 0) {
+      where.userId = { notIn: blockedUserIds };
+    }
     if (params.isAvailable !== undefined) {
       if (params.isAvailable) {
         where.AND = [
@@ -262,12 +269,17 @@ export class CookService {
     };
   }
 
-  async getMenuInformationForClient(cookId: string, dateParam?: string) {
+  async getMenuInformationForClient(
+    cookId: string,
+    dateParam?: string,
+    viewerUserId?: string | null,
+  ) {
     const date = dateParam ? parseMenuDateUtc(dateParam) : utcTodayDateOnly();
     const cook = await this.prisma.cook.findUnique({
       where: { id: cookId },
       select: {
         id: true,
+        userId: true,
         businessName: true,
         bio: true,
         profileImageUrl: true,
@@ -288,6 +300,19 @@ export class CookService {
     });
     if (!cook || cook.verificationStatus !== VerificationStatus.APPROVED) {
       throw new NotFoundException('Cook not found');
+    }
+    if (viewerUserId) {
+      const blocked = await this.prisma.userBlock.findUnique({
+        where: {
+          blockerId_blockedUserId: {
+            blockerId: viewerUserId,
+            blockedUserId: cook.userId,
+          },
+        },
+      });
+      if (blocked) {
+        throw new NotFoundException('Cook not found');
+      }
     }
 
     const menu = await this.prisma.menu.findUnique({
@@ -339,5 +364,13 @@ export class CookService {
         isAvailable: dish.isAvailable && isCookActiveNow(cook, now),
       })),
     };
+  }
+
+  private async getBlockedUserIds(blockerId: string): Promise<string[]> {
+    const rows = await this.prisma.userBlock.findMany({
+      where: { blockerId },
+      select: { blockedUserId: true },
+    });
+    return rows.map((row) => row.blockedUserId);
   }
 }

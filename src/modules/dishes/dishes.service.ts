@@ -11,6 +11,7 @@ import { CreateDishFormDto } from './dto/create-dish-form.dto';
 import { paginationSkip } from '../../common/dto/pagination.dto';
 import { UpdateDishFormDto } from './dto/update-dish-form.dto';
 import { isCookActiveNow } from '../cook/cook-availability.util';
+import { assertCleanText } from '../../common/content-filter.util';
 
 const IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -109,6 +110,7 @@ export class DishesService {
 
     const category = dto.category?.trim() || 'general';
     const tags = parseTags(dto.tags);
+    assertCleanText([dto.name, dto.description, category, ...tags], 'Dish');
 
     return this.prisma.dish.create({
       data: {
@@ -195,6 +197,16 @@ export class DishesService {
       Object.assign(data, { portionCount: dto.portionCount } as Prisma.DishUpdateInput);
     }
     if (dto.isAvailable !== undefined) data.isAvailable = dto.isAvailable;
+
+    const fieldsToCheck = [
+      dto.name,
+      dto.description,
+      dto.category,
+      ...(dto.tags !== undefined ? parseTags(dto.tags) : []),
+    ].filter((value): value is string => typeof value === 'string');
+    if (fieldsToCheck.length > 0) {
+      assertCleanText(fieldsToCheck, 'Dish');
+    }
 
     const oldImageRelative = this.relativePathFromPublicUrl(existing.imageUrl);
     let newImageRelative: string | null = null;
